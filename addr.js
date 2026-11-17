@@ -145,5 +145,14 @@ async function findClientByPhone(phone, exceptId) {
   const orders = (await dbAll('orders'))
     .filter((o) => o.id !== exceptId && String(o.phone || '').replace(/\D/g, '').slice(-10) === d)
     .sort((a, b) => b.createdAt - a.createdAt);
-  return orders.length ? { last: orders[0], count: orders.length } : null;
+  if (!orders.length) return null;
+  const now = Date.now();
+  return {
+    last: orders[0],
+    count: orders.length,
+    // отмечен как проблемный хоть в одной заявке
+    problem: orders.find((o) => o.problemClient) || null,
+    // последняя закрытая заявка, гарантия по которой ещё идёт
+    warranty: orders.find((o) => o.status === 'closed' && o.warrantyDays && o.closedAt + o.warrantyDays * 864e5 >= now) || null,
+  };
 }

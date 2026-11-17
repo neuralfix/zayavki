@@ -21,7 +21,11 @@ DEVICES = [
     ('Стиральная машина', r'сма|см|стирал\w*|стир|стир\.?\s*маш\w*'),
     ('Телевизор', r'тв|телевизор\w*|телик|tv'),
 ]
-CANCEL_RE = re.compile(r'(?i)^(отмена|отменил\w*|отказ\w*|не\s+актуально)\b')
+CANCEL_RE = re.compile(r'(?i)^(отмена|отменил\w*|не\s+актуально)')   # не приезжал
+REFUSE_RE = re.compile(r'(?i)^отказ\w*')                              # приехал, денег не взял
+SD_RE = re.compile(r'(?i)(?<![а-яa-z])(сд|sd)(?![а-яa-z])')
+WARRANTY_VISIT_RE = re.compile(r'(?i)^гарантия\b')                     # выезд по гарантии
+TYPOS = [(r'фрион', 'фреон'), (r'шредр|шрёдер|шредор', 'шредер'), (r'кондеры', 'конденсаторы')]
 PHONE_RE = re.compile(r'^[\d\s()+-]{10,}$')
 REPORT_HINT = re.compile(r'(?i)нал|себес|закрыть|гар\b|диагност')
 
@@ -94,6 +98,43 @@ def parse_head(line):
         else:
             addr.append(p)
     return ', '.join(addr), name, dev
+
+
+def fix_typos(text):
+    for rx, good in TYPOS:
+        text = re.sub(r'(?i)(?<![а-яё])(' + rx + r')(?![а-яё])', good, text)
+    return text
+
+
+def split_address(addr):
+    """«Ленина 12-34, 3 эт.» → («Ленина 12», «34», подъезд, «3»)"""
+    apt = entrance = floor = ''
+    parts = []
+    for p in [x.strip() for x in addr.split(',') if x.strip()]:
+        m = re.search(r'(?i)(\d+)\s*эт\.?(?:аж)?', p) or re.search(r'(?i)эт(?:аж)?\.?\s*(\d+)', p)
+        if m and not floor:
+            floor = m.group(1); p = (p[:m.start()] + p[m.end():]).strip(' ,.')
+        m = re.search(r'(?i)(\d+)\s*под(?:ъезд)?\.?', p) or re.search(r'(?i)под(?:ъезд)?\.?\s*(\d+)', p)
+        if m and not entrance:
+            entrance = m.group(1); p = (p[:m.start()] + p[m.end():]).strip(' ,.')
+        m = re.search(r'(?i)кв\.?\s*(\d+[а-я]?)', p)
+        if m and not apt:
+            apt = m.group(1); p = (p[:m.start()] + p[m.end():]).strip(' ,.')
+        m = re.match(r'^(.*?\d+[а-яА-Я]?(?:/\d+[а-яА-Я]?)?(?:\s*к\.?\s*\d+)?)\s*-\s*(\d+[а-яА-Я]?)$', p)
+        if m and not apt:
+            p, apt = m.group(1).strip(), m.group(2)
+        if p:
+            parts.append(p)
+    return ', '.join(parts), apt, entrance, floor
+
+
+def parse_sd(line):
+    """«сд модуль, аванс 5000» → {what, advance}"""
+    low = line.replace('ё', 'е')
+    adv = re.search(r'(?i)аванс\w*\s*(\d[\d\s]*)', low) or re.search(r'(?i)(\d[\d\s]*)\s*аванс', low)
+    what = re.sub(r'(?i)аванс\w*\s*\d[\d\s]*|\d[\d\s]*\s*аванс\w*', '', low)
+    what = SD_RE.sub('', re.sub(r'(?i)забрал\w*\s*(на)?', '', what)).strip(' ,.-:')
+    return {'what': what, 'advance': num(adv.group(1).strip()) if adv else 0}
 
 
 def parse_report(line):
@@ -176,7 +217,8 @@ def build(root):
     orders, unparsed, stat = [], [], collections.Counter()
     for m in texts:
         lines = [l.strip() for l in m['text'].split('\n') if l.strip()]
-        head, phone, reports, cancel, other = '', '', [], False, []
+        head, phone, reports, cancel, refuse, other = '', '', [], False, False, []
+        sd, warranty_visit = None, False
         for i, l in enumerate(lines):
             pm = re.match(r'^\+?[\d\s()-]{10,}', l)
             if pm and len(re.sub(r'\D', '', pm.group(0))) >= 10:
@@ -189,21 +231,42 @@ def build(root):
                     other.append(rest)  # «89…, не морозит» — это описание проблемы
             elif CANCEL_RE.match(l):
                 cancel = True
+            elif REFUSE_RE.match(l):
+                refuse = True
+            elif WARRANTY_VISIT_RE.match(l) and len(l) < 30:
+                warranty_visit = True
+            elif SD_RE.search(l) and not re.search(r'(?i)нал|себес', l):
+                pos = SD_RE.search(l).start()
+                if not head and pos > 0 and re.search(r'\d', l[:pos]):
+                    head = l[:pos].strip(' ,')  # «Адрес 1-2, Имя, СД модуль, аванс 3000» в одной строке
+                sd = parse_sd(l[pos:] if pos > 0 else l)
             elif re.match(r'\d', l) and (i > 0 or REPORT_HINT.search(l)) and (REPORT_HINT.search(l) or i > 0):
                 reports.append(l)
             elif not head:
                 head = l
             else:
                 other.append(l)
+        # телефон внутри первой строки: «Адрес 1-2, Имя, тв, 89170000000»
+        hp = re.search(r'\+?\d[\d\s()-]{9,}\d', head)
+        if hp and len(re.sub(r'\D', '', hp.group(0))) >= 10 and not phone:
+            phone = hp.group(0)
+            head = (head[:hp.start()] + head[hp.end():]).strip(' ,')
+            head = re.sub(r',\s*,', ',', head)
         if not head and not phone:
             stat['пропущено: нет адреса и телефона'] += 1
             unparsed.append(mask(m['text'])[:120])
             continue
         address, name, dev = parse_head(head) if head else ('', '', '')
+        address, apt, entrance, floor = split_address(address)
         dev = dev or device_of(' '.join(other)) or device_by_parts(' '.join(reports + other))
         o = {'id': 'tg-' + m['id'], 'createdAt': m['ts'], 'updatedAt': m['ts'], 'phone': fmt_phone(phone) if phone else '',
-             'name': name, 'address': address, 'device': dev, 'model': '', 'problem': ' / '.join(other), 'visitAt': None,
-             'notes': 'Из Telegram:\n' + m['text'], 'income': 0, 'costs': [], 'source': 'telegram'}
+             'name': name, 'address': address, 'apt': apt, 'entrance': entrance, 'floor': floor,
+             'device': dev, 'model': '', 'problem': ' / '.join(other), 'visitAt': None,
+             'notes': '', 'tgText': m['text'], 'income': 0, 'costs': [], 'source': 'telegram'}
+        if sd:
+            o['sd'] = {'at': m['ts'], 'what': sd['what'], 'advance': sd['advance']}
+        if warranty_visit:
+            o['isWarranty'] = True
         if reports:
             r = parse_report(reports[0])
             for extra in reports[1:]:  # доп. строки с суммой — как расходы/доход, если явно указаны
@@ -215,24 +278,31 @@ def build(root):
                 unparsed.append(mask(reports[0])[:120])
                 r['income'] = None
             o['income'] = r['income'] or 0
-            o['costs'] = r['costs']
-            o['workDone'] = reports[0]
+            o['costs'] = [{'name': fix_typos(c['name']), 'amount': c['amount']} for c in r['costs']]
+            o['workDone'] = ', '.join(c['name'] for c in o['costs'] if c['name'] != 'расходы') or \
+                ('диагностика' if re.search(r'(?i)диагност', reports[0]) else '')
             if r['warranty']:
                 o['warrantyDays'] = r['warranty']
-            o['status'] = 'cancelled' if cancel and not o['income'] else 'closed'
+            o['status'] = 'closed' if o['income'] else ('refused' if refuse or sd else 'cancelled' if cancel else 'closed')
             o['closedAt'] = m['ts']
-            stat['закрыта' if o['status'] == 'closed' else 'отменена'] += 1
+            stat[{'closed': 'закрыта', 'refused': 'отказ', 'cancelled': 'отмена'}[o['status']]] += 1
             if r['income'] is None:
                 stat['отчёт без суммы'] += 1
                 unparsed.append(mask(reports[0])[:120])
+        elif refuse:
+            o['status'] = 'refused'; o['closedAt'] = m['ts']; stat['отказ'] += 1
         elif cancel:
-            o['status'] = 'cancelled'; o['closedAt'] = m['ts']; stat['отменена'] += 1
+            o['status'] = 'cancelled'; o['closedAt'] = m['ts']; stat['отмена'] += 1
+        elif sd:
+            o['status'] = 'sd'; stat['на СД'] += 1
         elif now - (m['ts'] or now) > 30 * 86400 * 1000:
             o['status'] = 'cancelled'; o['closedAt'] = m['ts']
-            o['notes'] = 'Импорт: в Telegram не было отчёта.\n' + o['notes']
-            stat['без отчёта, старше 30 дней → отменена'] += 1
+            stat['без отчёта, старше 30 дней → отмена'] += 1
         else:
             o['status'] = 'open'; stat['без отчёта, свежая → в работе'] += 1
+        if o.get('isWarranty'): stat['по гарантии'] += 1
+        if apt: stat['с квартирой'] += 1
+        if floor or entrance: stat['с этажом/подъездом'] += 1
         if not dev: stat['техника не определена'] += 1
         if not name: stat['имя не найдено'] += 1
         if not phone: stat['без телефона'] += 1

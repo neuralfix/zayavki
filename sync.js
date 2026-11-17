@@ -123,16 +123,17 @@ function _d(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
-const STATUS_RU = { open: 'В работе', closed: 'Закрыта', cancelled: 'Отменена' };
+const STATUS_RU = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 
 function ordersCsv(orders) {
-  const rows = [['№', 'Создана', 'Статус', 'Закрыта', 'Имя', 'Телефон', 'Адрес', 'Техника', 'Модель', 'Проблема',
-    'Что сделано', 'Взял', 'Расходы (что)', 'Расходы, сумма', 'Чистыми']];
+  const rows = [['№', 'Создана', 'Статус', 'Закрыта', 'Имя', 'Телефон', 'Адрес', 'Кв.', 'Техника', 'Модель', 'Проблема',
+    'Что сделано', 'Гарантия, дней', 'По гарантии', 'Взял', 'Себес (что)', 'Себес, сумма', 'Чистыми']];
   orders.slice().sort((a, b) => a.num - b.num).forEach((o) => rows.push([
-    o.num, _d(o.createdAt), STATUS_RU[o.status] || o.status, _d(o.closedAt), o.name, o.phone, o.address,
-    o.device, o.model, o.problem, o.workDone, o.income || 0,
+    o.num, _d(o.createdAt), STATUS_RU[o.status] || o.status, _d(o.closedAt), o.name, o.phone, o.address, o.apt,
+    o.device, o.model, o.problem, o.workDone, o.warrantyDays || '', o.isWarranty ? 'да' : '',
+    o.status === 'closed' ? (o.income || 0) : '',
     (o.costs || []).map((c) => (c.name || 'расход') + ' ' + c.amount).join(', '),
-    orderCosts(o), o.status === 'open' ? '' : orderNet(o),
+    o.status === 'closed' ? orderCosts(o) : '', o.status === 'closed' ? orderNet(o) : '',
   ]));
   return _csv(rows);
 }
