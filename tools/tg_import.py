@@ -256,6 +256,19 @@ if __name__ == '__main__':
         by_month['%04d-%02d' % (d.year, d.month)] += 1
     print('закрытых по месяцам:', dict(sorted(by_month.items())))
     print('фото привязано:', len(photo_map), ' к заявкам:', len(set(photo_map.values())))
+    # Нужные фото (без миниатюр) — в папку «фото» рядом с файлом импорта: её и переносить на телефон
+    import shutil
+    pdir = os.path.join(os.path.dirname(os.path.abspath(dst)), 'фото')
+    os.makedirs(pdir, exist_ok=True)
+    copied, size = 0, 0
+    for d, _, fs in os.walk(src):
+        for f in fs:
+            if f in photo_map:
+                t = os.path.join(pdir, f)
+                if not os.path.exists(t):
+                    shutil.copy2(os.path.join(d, f), t)
+                copied += 1; size += os.path.getsize(t)
+    print('фото скопировано в', pdir, ':', copied, 'шт.,', round(size / 1048576), 'МБ')
     print('техника:', dict(collections.Counter(o['device'] or '—' for o in orders)))
     print('не разобрано (обезличено):', len(unparsed))
     for u in unparsed[:15]:

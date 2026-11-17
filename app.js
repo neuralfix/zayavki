@@ -13,7 +13,7 @@ const DEVICES = ['Холодильник', 'Стиральная машина', 
 const EXP_CATS = ['Реклама', 'Бензин', 'Инструмент', 'Запчасти впрок', 'Связь', 'Прочее'];
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Термостат', 'Датчик', 'Подшипники', 'ТЭН', 'Насос', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', closed: 'Закрыта', cancelled: 'Отменена' };
-const APP_VERSION = '1.7'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.8'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'open', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -658,6 +658,8 @@ async function renderSettings() {
     <button class="btn" id="connect">Подключить Яндекс Диск</button>
     <p class="small neg" id="connErr" hidden></p>`;
 
+  const tgLeft = Object.keys((await getMeta('tgPhotoMap')) || {}).length;
+
   view.innerHTML = `
     <div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
     <div class="card"><h2>Яндекс Диск</h2>${disk}</div>
@@ -672,6 +674,15 @@ async function renderSettings() {
       <p class="note" style="margin-top:0">Скачать можно только с паролем. Сам файл <b class="neg">не зашифрован</b>:
         он сохраняется в «Загрузки» этого телефона. Не пересылайте его и удалите, когда он больше не нужен.</p>
       <button class="btn sec" id="csv">🔒 Скачать таблицу заявок</button>
+    </div>
+    <div class="card"><h2>Импорт из Telegram</h2>
+      <p class="note" style="margin-top:0">Старые заявки из канала <b>добавляются</b> к текущим, ничего не стирается.
+        Повторный импорт того же файла не создаёт дублей.</p>
+      <label class="btn sec">1. Добавить заявки из файла<input type="file" id="tgImport" accept=".json,application/json" hidden></label>
+      ${tgLeft ? `<p class="small" style="margin:12px 0 6px">Ждут фото: <b>${tgLeft}</b>. Откройте папку «фото» из импорта,
+        выделите все снимки и нажмите «Выбрать». Лишние файлы приложение пропустит само.</p>
+      <label class="btn sec">2. Добавить фото к заявкам<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
+      <p class="note">После импорта удалите файл и папку с фото из телефона: они не зашифрованы.</p>
     </div>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
@@ -815,6 +826,62 @@ async function renderSettings() {
       await restoreDump(d, false);
       toast('Восстановлено из файла'); requestSync(); go('#/orders');
     } catch (err) { toast(err.message); }
+  };
+
+  // ---------- Импорт из Telegram ----------
+  $('#tgImport').onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try {
+      const d = JSON.parse(await f.text());
+      if (d.kind !== 'telegram-import' || !Array.isArray(d.orders)) throw new Error('Это не файл импорта из Telegram');
+      const have = new Set((await dbAll('orders')).map((o) => o.id));
+      const fresh = d.orders.filter((o) => o.id && !have.has(o.id)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      const closed = fresh.filter((o) => o.status === 'closed');
+      const net = closed.reduce((s, o) => s + orderNet(o), 0);
+      if (!fresh.length) { toast('Все заявки из этого файла уже добавлены'); return; }
+      if (!confirm(`В файле заявок: ${d.orders.length}, новых: ${fresh.length}.\n` +
+        `Закрытых: ${closed.length}, чистыми по ним: ${money(net)}.\n` +
+        `Отменённых: ${fresh.filter((o) => o.status === 'cancelled').length}, в работе: ${fresh.filter((o) => o.status === 'open').length}.\n\nДобавить?`)) return;
+      toast('Добавляю заявки…');
+      for (const o of fresh) {
+        o.num = await nextOrderNum();
+        await dbPut('orders', o);
+      }
+      // какие фото к каким заявкам — запоминаем до шага «Добавить фото»
+      const map = (await getMeta('tgPhotoMap')) || {};
+      const ids = new Set((await dbAll('orders')).map((o) => o.id));
+      for (const [name, oid] of Object.entries(d.photoMap || {})) if (ids.has(oid)) map[name] = oid;
+      await setMeta('tgPhotoMap', map);
+      await changed();
+      toast('Добавлено заявок: ' + fresh.length);
+      renderSettings();
+    } catch (err) { toast(err.message); }
+  };
+
+  const tp = $('#tgPhotos'); if (tp) tp.onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+    const map = (await getMeta('tgPhotoMap')) || {};
+    const todo = files.filter((f) => map[f.name]);
+    if (!todo.length) { toast('Среди выбранных нет фото из импорта'); return; }
+    tp.disabled = true;
+    let done = 0;
+    for (const f of todo) {
+      const o = await dbGet('orders', map[f.name]);
+      if (o) {
+        const blob = await compressImage(f, 1600, 0.75);
+        await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram' });
+      }
+      delete map[f.name];
+      done++;
+      if (done % 10 === 0 || done === todo.length) {
+        await setMeta('tgPhotoMap', map);
+        toast('Фото: ' + done + ' из ' + todo.length);
+      }
+    }
+    await setMeta('tgPhotoMap', map);
+    await changed();
+    toast('Фото добавлены: ' + done + (Object.keys(map).length ? ', ещё ждут: ' + Object.keys(map).length : ''));
+    renderSettings();
   };
 }
 
