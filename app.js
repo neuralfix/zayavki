@@ -623,7 +623,7 @@ async function renderSettings() {
       <li>Откройте <a href="https://oauth.yandex.ru/client/new" target="_blank" rel="noopener">oauth.yandex.ru/client/new</a> и войдите в свой Яндекс.</li>
       <li>Тип приложения: <b>Для доступа к API или отладки</b>.</li>
       <li>Название: <b>Мои заявки</b>. Почта — ваша.</li>
-      <li>Доступ: <b>Доступ к Яндекс.Диску для приложений</b> (только к своей папке). Больше ничего.</li>
+      <li>В поле «Название доступа» напечатайте <b>папке</b> и выберите <b>Доступ к папке приложения на Диске</b> (под ним серым <code>cloud_api:disk.app_folder</code>). Больше ничего. <b>Не</b> выбирайте «Доступ к Яндекс.Диску для приложений» (<code>yadisk:disk</code>): он открывает весь Диск и приложению не подходит.</li>
       <li>Адрес возврата не меняйте. Нажмите «Создать приложение» и скопируйте <b>ClientID</b> сюда:</li>
     </ol>
     <div class="field"><input class="input" id="cid" placeholder="ClientID" value="${esc(clientId)}" autocomplete="off"></div>
@@ -649,7 +649,7 @@ async function renderSettings() {
         Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
       <button class="btn sec" id="csv">Скачать таблицу заявок</button>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.3</p>`;
+    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.4</p>`;
 
   const sp = $('#setPw'); if (sp) sp.onclick = async () => {
     const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
