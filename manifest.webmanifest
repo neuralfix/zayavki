@@ -3,7 +3,7 @@
   "short_name": "Заявки",
   "description": "Заявки, отчёты и заработок мастера по ремонту техники",
   "lang": "ru",
-  "start_url": "./#/orders",
+  "start_url": "./#/today",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",

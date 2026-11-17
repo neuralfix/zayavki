@@ -16,19 +16,20 @@
     <svg viewBox="0 0 24 24" width="24" height="24"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
   <h1 id="title">Заявки</h1>
-  <a class="sync" id="syncBadge" href="#/settings"></a>
+  <span class="clock" id="clock"></span>
+  <div class="top-r"><a class="sync" id="syncBadge" href="#/settings"></a></div>
 </header>
 <div id="updBar" hidden></div>
 
 <main id="view"></main>
 
 <nav class="tabs">
+  <a href="#/today" data-tab="today">
+    <svg viewBox="0 0 24 24"><path d="M4 6h16v14H4z M4 10h16 M8 3v5 M16 3v5 M8.5 15l2.3 2.2 4.7-4.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span>Сегодня</span></a>
   <a href="#/orders" data-tab="orders">
     <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z M14 3v5h5 M9 12h7 M9 16h7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
     <span>Заявки</span></a>
-  <a href="#/expenses" data-tab="expenses">
-    <svg viewBox="0 0 24 24"><path d="M3 7h18v12H3z M3 11h18 M7 15h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-    <span>Расходы</span></a>
   <a href="#/report" data-tab="report">
     <svg viewBox="0 0 24 24"><path d="M4 20V10 M10 20V4 M16 20v-7 M21 20H3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
     <span>Отчёт</span></a>

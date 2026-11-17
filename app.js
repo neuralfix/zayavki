@@ -9,15 +9,49 @@ const money = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) 
 const parseMoney = (s) => { const v = parseFloat(String(s ?? '').replace(/[\s ₽]/g, '').replace(',', '.')); return isFinite(v) ? v : 0; };
 const digits = (s) => String(s ?? '').replace(/\D/g, '');
 
+// «89659324576», «8-965-932-45-76», «+7 965 9324576», «9659324576» → «+7 (965) 932-45-76».
+// Что не похоже на один номер (буквы, два номера, короткий городской) — оставляем как написано.
+function fmtPhone(s) {
+  const raw = String(s ?? '').trim();
+  if (!raw || /[a-zа-яё]/i.test(raw)) return raw;
+  let d = digits(raw);
+  if (d.length === 11 && /^[78]/.test(d)) d = d.slice(1);
+  if (d.length !== 10) return raw;
+  return '+7 (' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6, 8) + '-' + d.slice(8);
+}
+const PHONE_RE = /(?:\+7|8)?[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/;
+const telHref = (phone) => 'tel:' + String(phone).replace(/[^\d+]/g, '');
+
+// Строка для имени контакта в телефонной книге: «ХК Ленина 12-34 Иван 11.11.26»
+const DEV_SHORT = { 'Холодильник': 'ХК', 'Стиральная машина': 'СМА', 'Телевизор': 'ТВ' };
+function contactLabel(o) {
+  const dev = DEV_SHORT[o.device] || (o.model ? o.model.split(/\s+/)[0] : '');
+  const addr = String(o.address || '')
+    .replace(/(^|,\s*)(ул\.|улица)\s*/gi, '$1')
+    .replace(/(^|,\s*)(пр-т|проспект)\s*/gi, '$1пр. ')
+    .replace(/\s*,\s*/g, ' ').trim();
+  const d = new Date(o.createdAt || Date.now());
+  const date = String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + String(d.getFullYear()).slice(2);
+  return [dev, addr ? addr + (o.apt ? '-' + o.apt : '') : '', o.name, date].filter(Boolean).join(' ');
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; } catch (e) { /* запасной способ ниже */ }
+  const ta = document.createElement('textarea');
+  ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) { /* нет */ }
+  ta.remove(); return ok;
+}
+
 const DEVICES = ['Холодильник', 'Стиральная машина', 'Телевизор', 'Другое'];
 const EXP_CATS = ['Реклама', 'Прочее'];
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.9'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.10'; // вместе с version.json и CACHE в sw.js
 
-const state = { filter: 'open', search: '', month: monthKey(Date.now()) };
+const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
 
 // ---------- Даты ----------
@@ -49,9 +83,9 @@ function fromDateInput(v, keepTimeOf) {
 
 // ---------- Общие мелочи ----------
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 function setTitle(t, back) {
   $('#title').textContent = t;
@@ -59,7 +93,7 @@ function setTitle(t, back) {
   document.title = t + ' — Мои заявки';
 }
 function setTab(name) {
-  const map = { orders: 'orders', new: 'orders', edit: 'orders', order: 'orders', close: 'orders', expenses: 'expenses', expense: 'expenses', report: 'report', settings: 'settings' };
+  const map = { today: 'today', orders: 'orders', new: 'orders', edit: 'orders', order: 'orders', close: 'orders', expense: 'report', report: 'report', settings: 'settings' };
   $$('.tabs a').forEach((a) => a.classList.toggle('on', a.dataset.tab === map[name]));
 }
 function go(hash, replace) { if (replace) location.replace(hash); else location.hash = hash; }
@@ -92,28 +126,29 @@ async function updateSyncBadge() {
     if (!navigator.onLine) b.classList.add('warn');
     return;
   }
-  b.textContent = '✓ ' + (s.lastSync ? new Date(s.lastSync).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : 'на Диске');
+  b.textContent = '☁ ✓';
+  b.title = s.lastSync ? 'На Диске, последняя отправка ' + fmtDate(s.lastSync) : 'На Диске';
 }
 
 // ---------- Маршруты ----------
 async function route() {
   photoUrls.forEach((u) => URL.revokeObjectURL(u)); photoUrls = [];
-  const h = location.hash || '#/orders';
+  const h = location.hash || '#/today';
   const [, name, id] = h.split('/');
   setTab(name);
   window.scrollTo(0, 0);
   try {
     switch (name) {
+      case 'today': return await renderToday();
       case 'orders': return await renderOrders();
       case 'new': return await renderOrderForm(null, id); // #/new/<id> — заявка по гарантии к заявке id
       case 'edit': return await renderOrderForm(id);
       case 'order': return await renderOrder(id);
       case 'close': return await renderClose(id);
-      case 'expenses': return await renderExpenses();
       case 'expense': return await renderExpenseForm(id === 'new' ? null : id);
       case 'report': return await renderReport();
       case 'settings': return await renderSettings();
-      default: return go('#/orders', true);
+      default: return go('#/today', true);
     }
   } catch (e) {
     console.error(e);
@@ -129,6 +164,14 @@ const dayShort = (ts) => new Date(ts).toLocaleDateString('ru-RU', { day: 'numeri
 const sdLine = (o) => o.sd ? ['на СД с ' + dayShort(o.sd.at), o.sd.what, o.sd.advance ? 'аванс ' + money(o.sd.advance) : ''].filter(Boolean).join(' · ') : '';
 // Для Яндекс Карт: улица Уфы → «Уфа, …», село района («Миловка, ул. …») → «Уфимский район, …». Без квартиры.
 const mapsQuery = (o) => (/^[А-ЯЁA-Z][^,]*,/.test(o.address) && !/^(ул|улица|пр|пр-т|проспект|пер|переулок|б-р|ш|шоссе|туп|пл|наб|мкр)(?=[\s.,]|$)/i.test(o.address) ? 'Уфимский район, ' : 'Уфа, ') + o.address;
+// Android: сразу Яндекс Навигатор; если его нет — Яндекс Карты. На компьютере — Карты.
+function routeHref(o) {
+  const q = mapsQuery(o);
+  const maps = 'https://yandex.ru/maps/?text=' + encodeURIComponent(q);
+  if (!/Android/i.test(navigator.userAgent)) return maps;
+  return 'intent://map_search?text=' + encodeURIComponent(q) +
+    '#Intent;scheme=yandexnavi;package=ru.yandex.yandexnavi;S.browser_fallback_url=' + encodeURIComponent(maps) + ';end';
+}
 const daysWord = (n) => n % 10 === 1 && n % 100 !== 11 ? 'день' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'дня' : 'дней');
 
 function matches(o, q) {
@@ -136,7 +179,12 @@ function matches(o, q) {
   const text = [o.num, o.name, o.phone, o.address, o.apt, o.device, o.model, o.problem, o.notes, o.workDone, o.sd?.what, o.problemClient].join(' ').toLowerCase();
   if (text.includes(q)) return true;
   const dq = digits(q);
-  return dq.length >= 3 && digits(o.phone).includes(dq);
+  if (dq.length < 3) return false;
+  const tel = digits(o.phone);
+  const tries = [dq];
+  if (/^[78]/.test(dq) && dq.length >= 4) tries.push('7' + dq.slice(1), '8' + dq.slice(1));
+  if (dq.length === 11 && /^[78]/.test(dq)) tries.push(dq.slice(1));
+  return tries.some((t) => tel.includes(t));
 }
 
 async function renderOrders() {
@@ -146,10 +194,10 @@ async function renderOrders() {
   all.forEach((o) => { if (o.status === 'open') cnt.open++; else if (o.status === 'sd') cnt.sd++; else cnt.closed++; });
   view.innerHTML = `
     <div class="seg">
+      <button data-f="all" class="${state.filter === 'all' ? 'on' : ''}">Все</button>
       <button data-f="open" class="${state.filter === 'open' ? 'on' : ''}">В работе ${cnt.open}</button>
       <button data-f="sd" class="${state.filter === 'sd' ? 'on' : ''}">На СД ${cnt.sd}</button>
       <button data-f="closed" class="${state.filter === 'closed' ? 'on' : ''}">Закрытые</button>
-      <button data-f="all" class="${state.filter === 'all' ? 'on' : ''}">Все</button>
     </div>
     <input class="search" type="search" placeholder="Поиск: имя, телефон, адрес, №" value="${esc(state.search)}">
     <div class="list" id="list"></div>
@@ -163,17 +211,16 @@ function drawList(all) {
   const q = state.search.trim().toLowerCase();
   const f = state.filter;
   let list = all.filter((o) => (f === 'all' || (f === 'closed' ? !isActive(o.status) : o.status === f)) && matches(o, q));
-  if (f === 'open') {
-    // сначала с назначенным временем (по порядку), потом остальные — новые сверху
-    list.sort((a, b) => (a.visitAt || Infinity) - (b.visitAt || Infinity) || b.createdAt - a.createdAt);
-  } else if (f === 'sd') {
-    list.sort((a, b) => (a.sd?.at || 0) - (b.sd?.at || 0));
-  } else {
-    list.sort((a, b) => (b.closedAt || b.createdAt) - (a.closedAt || a.createdAt));
-  }
+  // В работе: сначала с назначенным временем (по порядку), потом без времени — новые сверху.
+  // На СД: давние сверху. Закрытые, отказы, отмены: свежие сверху. «Все» — в таком же порядке группами.
+  const rank = (o) => (o.status === 'open' ? 0 : o.status === 'sd' ? 1 : 2);
+  list.sort((a, b) => rank(a) - rank(b) || (rank(a) === 0
+    ? (a.visitAt || Infinity) - (b.visitAt || Infinity) || b.createdAt - a.createdAt
+    : rank(a) === 1 ? (a.sd?.at || 0) - (b.sd?.at || 0)
+      : (b.closedAt || b.createdAt) - (a.closedAt || a.createdAt)));
   const el = $('#list');
   if (!list.length) {
-    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : 'Пока пусто'}</div>`;
+    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
     return;
   }
   el.innerHTML = list.map((o) => {
@@ -188,6 +235,53 @@ function drawList(all) {
       <div class="row small muted"><span class="grow">${esc(when)}</span>${sum}</div>
     </a>`;
   }).join('');
+}
+
+// ================= СЕГОДНЯ =================
+const hhmm = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+function todayItem(o, timeText) {
+  const tel = digits(o.phone);
+  const place = shortAddress(o) || o.name || 'адрес не указан';
+  const sub = [o.device, shortAddress(o) ? o.name : '', o.problem].filter(Boolean).join(' · ');
+  return `<div class="item today-item">
+    <a class="t-main" href="#/order/${o.id}">
+      <div class="row">${timeText ? `<b class="t-time">${esc(timeText)}</b>` : ''}<b class="grow">${esc(place)}</b>
+        ${o.problemClient ? '<span class="tag-bad">⚠</span>' : ''}${o.isWarranty ? '<span class="tag-w">гарантия</span>' : ''}</div>
+      <div class="row small muted"><span class="grow">${esc(sub || '№' + o.num)}</span></div>
+    </a>
+    ${tel || o.address ? `<div class="btns">
+      ${tel ? `<a class="btn" href="${esc(telHref(o.phone))}">Позвонить</a>` : '<span></span>'}
+      ${o.address ? `<a class="btn sec" href="${esc(routeHref(o))}">Маршрут</a>` : '<span></span>'}
+    </div>` : ''}
+  </div>`;
+}
+
+async function renderToday() {
+  setTitle('Сегодня');
+  const all = await dbAll('orders');
+  const n = new Date();
+  const start = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
+  const end = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1).getTime();
+  const end2 = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 2).getTime();
+  const open = all.filter((o) => o.status === 'open');
+  const byTime = (a, b) => a.visitAt - b.visitAt;
+  const late = open.filter((o) => o.visitAt && o.visitAt < start).sort(byTime);
+  const today = open.filter((o) => o.visitAt >= start && o.visitAt < end).sort(byTime);
+  const noTime = open.filter((o) => !o.visitAt).sort((a, b) => b.createdAt - a.createdAt);
+  const tomorrow = open.filter((o) => o.visitAt >= end && o.visitAt < end2).sort(byTime);
+  const sd = all.filter((o) => o.status === 'sd').length;
+  const sec = (title, list, t, cls = '') => list.length ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>
+    <div class="list">${list.map((o) => todayItem(o, t(o))).join('')}</div>` : '';
+  view.innerHTML = `
+    ${sec('Просрочено', late, (o) => dayShort(o.visitAt) + ', ' + hhmm(o.visitAt), 'neg')}
+    ${sec('На сегодня', today, (o) => hhmm(o.visitAt))}
+    ${sec('Без времени', noTime, () => '')}
+    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.<br>Нажмите «+», чтобы добавить.</div>' : ''}
+    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}
+    ${sd ? `<a class="item sd-link" href="#/orders" id="toSd">🔧 На СД: ${sd}</a>` : ''}
+    <a class="fab" href="#/new" aria-label="Новая заявка">+</a>`;
+  const toSd = $('#toSd'); if (toSd) toSd.onclick = () => { state.filter = 'sd'; };
 }
 
 // Заявки в тот же день, что и выбранное время. near — ближе, чем длительность выезда.
@@ -212,7 +306,9 @@ async function renderOrderForm(id, warrantyFromId) {
   view.innerHTML = `
     <form id="f" autocomplete="off">
       <div class="client-hint warn" id="wbanner" ${warrantyOf ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + src.warrantyDays + ' ' + daysWord(src.warrantyDays) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
-      <div class="field"><label>Телефон</label><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
+      <div class="field"><label>Телефон</label>
+        <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
+          <button type="button" class="btn sec" id="pastePh">📋 Вставить</button></div>
         <div id="client"></div></div>
       <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
       <div class="addr-row">
@@ -290,12 +386,25 @@ async function renderOrderForm(id, warrantyFromId) {
   };
   phoneIn.addEventListener('input', showClient);
   if (src) showClient();
+  // Вставили или дописали — приводим к виду +7 (965) 932-45-76
+  const tidyPhone = () => { const f = fmtPhone(phoneIn.value); if (f !== phoneIn.value) { phoneIn.value = f; showClient(); } };
+  phoneIn.addEventListener('paste', () => setTimeout(tidyPhone, 0));
+  phoneIn.addEventListener('change', tidyPhone);
+  $('#pastePh').onclick = async () => {
+    let t = '';
+    try { t = await navigator.clipboard.readText(); } catch (e) { toast('Телефон не дал прочитать буфер — вставьте долгим нажатием', 4000); return; }
+    const m = String(t).match(PHONE_RE);
+    if (!m && digits(t).length < 5) { toast('В буфере нет номера'); return; }
+    phoneIn.value = fmtPhone(m ? m[0] : t.trim());
+    showClient();
+  };
 
   if (!o && !src) phoneIn.focus();
   $('#f').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     const data = Object.fromEntries([...fd.entries()].map(([k, val]) => [k, String(val).trim()]));
+    data.phone = fmtPhone(data.phone);
     if (!data.phone && !data.name && !data.address && !data.notes && !data.problem) { toast('Заполните хотя бы одно поле'); return; }
     const now = Date.now();
     const rec = o ? { ...o } : { id: uid(), num: await nextOrderNum(), createdAt: now, status: 'open', costs: [], income: 0 };
@@ -381,15 +490,15 @@ async function renderOrder(id) {
   }
   view.innerHTML = `
     ${tel || o.address ? `<div class="btns" style="margin-bottom:12px">
-      ${tel ? `<a class="btn" href="tel:${esc(o.phone.replace(/[^\d+]/g, ''))}">Позвонить</a>` : '<span></span>'}
-      ${o.address ? `<a class="btn sec" href="https://yandex.ru/maps/?text=${encodeURIComponent(mapsQuery(o))}" target="_blank" rel="noopener">Маршрут</a>` : '<span></span>'}
+      ${tel ? `<a class="btn" href="${esc(telHref(o.phone))}">Позвонить</a>` : '<span></span>'}
+      ${o.address ? `<a class="btn sec" href="${esc(routeHref(o))}">Маршрут</a>` : '<span></span>'}
     </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
       <div class="row" style="margin-bottom:10px"><span class="grow"><b>${esc([o.device, o.model].filter(Boolean).join(' ') || 'Техника не указана')}</b>${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
       <dl class="kv">
         ${o.name ? `<dt>Имя</dt><dd>${esc(o.name)}</dd>` : ''}
-        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)}</dd>` : ''}
+        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)}<br><button type="button" class="link small" data-a="copyc">📋 Копировать для контакта</button></dd>` : ''}
         ${o.address ? `<dt>Адрес</dt><dd>${esc(fullAddress(o))}</dd>` : ''}
         ${o.problem ? `<dt>Проблема</dt><dd>${esc(o.problem)}</dd>` : ''}
         ${o.visitAt && isActive(o.status) ? `<dt>Когда</dt><dd>${esc(fmtDate(o.visitAt))}</dd>` : ''}
@@ -409,6 +518,11 @@ async function renderOrder(id) {
   await photoWidget(o, $('#photos'));
   const save = async (patch) => { Object.assign(o, patch, { updatedAt: Date.now() }); await dbPut('orders', o); changed(); renderOrder(id); };
   $('[data-a=edit]').onclick = () => go('#/edit/' + o.id);
+  const cc = $('[data-a=copyc]'); if (cc) cc.onclick = async () => {
+    const t = contactLabel(o);
+    if (await copyText(t)) toast('Скопировано: ' + t + ' · Сохраняйте контакт в «Телефон», не в Google', 5000);
+    else toast('Не получилось скопировать: ' + t, 5000);
+  };
   const sdB = $('[data-a=sd]'); if (sdB) sdB.onclick = async () => {
     const r = await sdDialog(o); if (!r) return;
     await save({ status: 'sd', sd: { at: o.sd?.at || Date.now(), what: r.what, advance: parseMoney(r.advance) } });
@@ -517,7 +631,7 @@ async function renderClose(id) {
         <div class="field"><label>Взял с клиента, ₽ — вся сумма</label>
           <input class="input big" name="income" inputmode="decimal" placeholder="0" value="${o.income ? esc(o.income) : ''}">
           ${o.sd?.advance ? `<p class="small warn-text" style="margin:6px 0 0">Аванс был ${money(o.sd.advance)} — впишите общую сумму вместе с ним.</p>` : ''}</div>
-        <span class="label">Себес — ваши расходы по заявке</span>
+        <span class="label">Расходы — что купили по заявке</span>
         <div id="costs"></div>
         <button type="button" class="link" id="addCost">+ Добавить расход</button>
         <div class="chips" style="margin-top:6px">${COST_CHIPS.map((c) => `<button type="button" class="chip" data-c="${c}">${c}</button>`).join('')}</div>
@@ -552,7 +666,7 @@ async function renderClose(id) {
     const cs = readCosts().reduce((s, c) => s + c.amount, 0);
     const net = inc - cs;
     $('#total').innerHTML = `<span>Взял</span><span>${money(inc)}</span>
-      <span>Себес</span><span>− ${money(cs)}</span>
+      <span>Расходы</span><span>− ${money(cs)}</span>
       <span class="sum">Чистыми</span><span class="sum ${net >= 0 ? 'pos' : 'neg'}">${money(net)}</span>`;
   };
   costs.forEach((c) => addRow(c));
@@ -589,28 +703,14 @@ async function renderClose(id) {
   };
 }
 
-// ================= РАСХОДЫ =================
-async function renderExpenses() {
-  setTitle('Расходы');
-  const all = (await dbAll('expenses')).sort((a, b) => b.date - a.date);
-  if (!all.length) {
-    view.innerHTML = `<div class="empty">Здесь расходы не по заявкам:<br>реклама и прочее.<br><br>Нажмите «+», чтобы добавить.</div><a class="fab" href="#/expense/new">+</a>`;
-    return;
-  }
-  const groups = new Map();
-  all.forEach((e) => { const k = monthKey(e.date); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(e); });
-  view.innerHTML = [...groups].map(([k, list]) => `
-    <div class="row" style="margin:14px 2px 8px"><b class="grow" style="text-transform:capitalize">${monthName(k)}</b><b class="neg">${money(list.reduce((s, e) => s + e.amount, 0))}</b></div>
-    <div class="list">${list.map((e) => `<a class="item" href="#/expense/${e.id}">
-      <div class="row"><b class="grow">${esc(e.category)}</b><span>${money(e.amount)}</span></div>
-      <div class="row small muted"><span class="grow">${esc(e.comment || '')}</span><span>${esc(fmtDate(e.date, false))}</span></div>
-    </a>`).join('')}</div>`).join('') + '<a class="fab" href="#/expense/new" aria-label="Новый расход">+</a>';
-}
-
+// ================= РЕКЛАМА И ПРОЧЕЕ (живут в «Отчёте») =================
 async function renderExpenseForm(id) {
   const e0 = id ? await dbGet('expenses', id) : null;
-  if (id && !e0) return go('#/expenses', true);
-  setTitle(e0 ? 'Расход' : 'Новый расход', true);
+  if (id && !e0) return go('#/report', true);
+  setTitle(e0 ? 'Реклама и прочее' : 'Новый расход', true);
+  // новый расход — в тот месяц, который открыт в отчёте
+  const [ry, rm] = state.month.split('-').map(Number);
+  const defDate = state.month === monthKey(Date.now()) ? Date.now() : new Date(ry, rm - 1, 1, 12).getTime();
   let cat = e0 ? e0.category : 'Реклама';
   const cats = EXP_CATS.includes(cat) ? EXP_CATS : [...EXP_CATS, cat]; // старые категории не теряем
   view.innerHTML = `
@@ -619,7 +719,7 @@ async function renderExpenseForm(id) {
         <div class="chips" id="cats">${cats.map((c) => `<button type="button" class="chip ${c === cat ? 'on' : ''}" data-v="${c}">${c}</button>`).join('')}</div></div>
       <div class="field"><label>Сумма, ₽</label><input class="input big" name="amount" inputmode="decimal" placeholder="0" value="${e0 ? esc(e0.amount) : ''}"></div>
       <div class="field"><label>Комментарий</label><input class="input" name="comment" placeholder="Например: Авито, продвижение" value="${esc(e0?.comment)}"></div>
-      <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(e0 ? e0.date : Date.now())}"></div>
+      <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(e0 ? e0.date : defDate)}"></div>
       <button class="btn" type="submit">Сохранить</button>
       ${e0 ? '<button class="btn danger" type="button" id="del">Удалить</button>' : ''}
     </form>`;
@@ -632,11 +732,11 @@ async function renderExpenseForm(id) {
     const rec = { ...(e0 || { id: uid(), createdAt: Date.now() }), category: cat, amount,
       comment: $('[name=comment]').value.trim(), date: fromDateInput($('[name=date]').value, e0?.date), updatedAt: Date.now() };
     await dbPut('expenses', rec);
-    toast('Расход сохранён'); changed(); go('#/expenses', true);
+    toast('Расход сохранён'); changed(); go('#/report', true);
   };
   const d = $('#del'); if (d) d.onclick = async () => {
     if (!confirm('Удалить расход?')) return;
-    await dbDel('expenses', e0.id); changed(); go('#/expenses', true);
+    await dbDel('expenses', e0.id); changed(); go('#/report', true);
   };
 }
 
@@ -678,6 +778,7 @@ async function renderReport() {
   const workDays = perDay.filter((x) => x).length;
   const today = monthKey(Date.now()) === key ? new Date().getDate() : 0;
   const total = s.closed.length + s.refused + s.cancelled;
+  const exps = expenses.filter((e) => monthKey(e.date) === key).sort((a, b) => b.date - a.date);
 
   view.innerHTML = `
     <div class="month-nav"><button id="prev">‹</button><b>${monthName(key)}</b><button id="next">›</button></div>
@@ -686,12 +787,19 @@ async function renderReport() {
       <div class="big-num ${s.profit >= 0 ? 'pos' : 'neg'}">${money(s.profit)}</div>
       <div class="stat" style="margin-top:12px">
         <span>Взял с клиентов</span><b>${money(s.income)}</b>
-        <span>Себес по заявкам</span><span>− ${money(s.parts)}</span>
+        <span>Расходы</span><span>− ${money(s.parts)}</span>
         <span>Чистыми с заявок</span><b>${money(s.net)}</b>
         ${Object.entries(s.byCat).map(([c, v]) => `<span class="muted">− ${esc(c)}</span><span class="muted">${money(v)}</span>`).join('')}
         <div class="sep"></div>
         <span class="em">Итого прибыль</span><span class="em ${s.profit >= 0 ? 'pos' : 'neg'}">${money(s.profit)}</span>
       </div>
+    </div>
+    <div class="card">
+      <div class="row card-head"><h2 class="grow">Реклама и прочее</h2><a class="btn sec mini" href="#/expense/new">+ Добавить</a></div>
+      ${exps.length ? `<div class="list">${exps.map((e) => `<a class="item" href="#/expense/${e.id}" style="border:0;padding:6px 0">
+        <div class="row small"><span class="grow">${esc(e.category)}${e.comment ? ' · ' + esc(e.comment) : ''}</span>
+        <span class="muted">${esc(dayShort(e.date))}</span><span class="neg">${money(e.amount)}</span></div></a>`).join('')}</div>`
+        : '<p class="note" style="margin:0">В этом месяце пусто. Реклама, бензин и всё, что не относится к одной заявке.</p>'}
     </div>
     <div class="card">
       <h2>Заработок по дням</h2>
@@ -1020,6 +1128,7 @@ async function renderSettings() {
       toast('Добавляю заявки…');
       for (const o of fresh) {
         o.num = await nextOrderNum();
+        o.phone = fmtPhone(o.phone);
         await dbPut('orders', o);
       }
       // какие фото к каким заявкам — запоминаем до шага «Добавить фото»
@@ -1137,11 +1246,35 @@ async function checkUpdateBanner(force) {
   $('button', bar).onclick = updateApp;
 }
 
+// Дата и время в шапке: «вт 17.11 · 14:35»
+function tickClock() {
+  const d = new Date();
+  $('#clock').textContent = d.toLocaleDateString('ru-RU', { weekday: 'short' }) + ' ' +
+    String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + ' · ' + hhmm(d);
+}
+
+// Номера в старых заявках (и после восстановления копии) — к виду +7 (965) 932-45-76
+async function tidyPhones() {
+  let n = 0;
+  for (const o of await dbAll('orders')) {
+    if (!o.phone) continue;
+    const f = fmtPhone(o.phone);
+    if (f !== o.phone) { o.phone = f; await dbPut('orders', o); n++; }
+  }
+  if (n) await markDirty();
+  return n;
+}
+
 async function start() {
-  $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/orders'));
+  tickClock();
+  setInterval(tickClock, 10 * 1000);
+  $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/today'));
+  try { await tidyPhones(); } catch (e) { console.warn('phones', e); }
   checkUpdateBanner(true);
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);
+  // Запуск с ярлыка (старый ярлык открывал «Заявки») — начинаем с «Сегодня»
+  if (history.length <= 1 && (!location.hash || location.hash === '#/orders')) history.replaceState(null, '', location.pathname + '#/today');
   await route();
   updateSyncBadge();
 
