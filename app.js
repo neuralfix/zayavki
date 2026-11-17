@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.10'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.11'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -1134,7 +1134,11 @@ async function renderSettings() {
       // какие фото к каким заявкам — запоминаем до шага «Добавить фото»
       const map = (await getMeta('tgPhotoMap')) || {};
       const ids = new Set((await dbAll('orders')).map((o) => o.id));
-      for (const [name, oid] of Object.entries(d.photoMap || {})) if (ids.has(oid)) map[name] = oid;
+      // значение — id заявки или список id (один снимок отправлен к двум заявкам)
+      for (const [name, v] of Object.entries(d.photoMap || {})) {
+        const list = (Array.isArray(v) ? v : [v]).filter((oid) => ids.has(oid));
+        if (list.length) map[name] = list;
+      }
       await setMeta('tgPhotoMap', map);
       await changed();
       toast('Добавлено заявок: ' + fresh.length);
@@ -1150,9 +1154,11 @@ async function renderSettings() {
     tp.disabled = true;
     let done = 0;
     for (const f of todo) {
-      const o = await dbGet('orders', map[f.name]);
-      if (o) {
-        const blob = await compressImage(f, 1600, 0.75);
+      let blob = null;
+      for (const oid of [].concat(map[f.name])) {
+        const o = await dbGet('orders', oid);
+        if (!o) continue;
+        blob = blob || await compressImage(f, 1600, 0.75);
         await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram' });
       }
       delete map[f.name];

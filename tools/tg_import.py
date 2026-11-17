@@ -190,32 +190,30 @@ def build(root):
     for m in msgs:
         m['ts'] = parse_date(m['date'])
 
-    # Фото → к ближайшему по времени сообщению с текстом в той же цепочке (или в пределах 10 минут)
-    chains = []
+    # Фото → заявке только точно: по альбому. Telegram отправляет фото к заявке одной пачкой —
+    # подряд идущие сообщения с одинаковым временем до секунды; подпись (текст заявки) у одного из них.
+    # Альбом без подписи или с несколькими текстами не угадываем: такие фото откладываются отдельно.
+    albums = []
     for m in msgs:
-        if not m['joined'] or not chains:
-            chains.append([])
-        chains[-1].append(m)
-    texts = [m for m in msgs if m['text']]
-    photo_owner = {}
-    for c in chains:
-        ct = [m for m in c if m['text']]
-        for m in c:
-            if m['text'] or not m['photos']:
-                continue
-            pool = ct or [t for t in texts if m['ts'] and t['ts'] and abs(t['ts'] - m['ts']) <= 10 * 60 * 1000]
-            if not pool:
-                continue
-            owner = min(pool, key=lambda t: (abs((t['ts'] or 0) - (m['ts'] or 0)), -(t['ts'] or 0)))
-            for p in m['photos']:
-                photo_owner[p] = owner['id']
-        for m in ct:
-            for p in m['photos']:
-                photo_owner[p] = m['id']
+        if m['photos'] and albums and albums[-1][-1]['photos'] and m['joined'] and m['ts'] and albums[-1][-1]['ts'] == m['ts']:
+            albums[-1].append(m)
+        else:
+            albums.append([m])
+    photo_owner, photo_loose = {}, []
+    for al in albums:
+        ph = [p for x in al for p in x['photos']]
+        if not ph:
+            continue
+        owners = [x for x in al if x['text']]
+        if len(owners) == 1:
+            for p in ph:
+                photo_owner[p] = owners[0]['id']
+        else:
+            photo_loose.extend(ph)
 
     now = max((m['ts'] or 0) for m in msgs)
     orders, unparsed, stat = [], [], collections.Counter()
-    for m in texts:
+    for m in [x for x in msgs if x['text']]:
         lines = [l.strip() for l in m['text'].split('\n') if l.strip()]
         head, phone, reports, cancel, refuse, other = '', '', [], False, False, []
         sd, warranty_visit = None, False
@@ -312,7 +310,16 @@ def build(root):
     ids = {o['id'] for o in orders}
     for path, mid in photo_owner.items():
         if 'tg-' + mid in ids:
-            photo_map[os.path.basename(path)] = 'tg-' + mid
+            # один и тот же снимок мог быть отправлен к двум заявкам — тогда список
+            name, oid = os.path.basename(path), 'tg-' + mid
+            cur = photo_map.get(name)
+            if cur is None:
+                photo_map[name] = oid
+            elif oid not in (cur if isinstance(cur, list) else [cur]):
+                photo_map[name] = (cur if isinstance(cur, list) else [cur]) + [oid]
+        else:
+            photo_loose.append(path)
+    build.loose = photo_loose
     return orders, photo_map, stat, unparsed
 
 
@@ -333,19 +340,25 @@ if __name__ == '__main__':
         by_month['%04d-%02d' % (d.year, d.month)] += 1
     print('закрытых по месяцам:', dict(sorted(by_month.items())))
     print('фото привязано:', len(photo_map), ' к заявкам:', len(set(photo_map.values())))
-    # Нужные фото (без миниатюр) — в папку «фото» рядом с файлом импорта: её и переносить на телефон
+    # Фото с заявкой — в «фото» (её и переносить на телефон); без заявки — в «фото_без_заявки», посмотреть глазами
     import shutil
-    pdir = os.path.join(os.path.dirname(os.path.abspath(dst)), 'фото')
-    os.makedirs(pdir, exist_ok=True)
-    copied, size = 0, 0
-    for d, _, fs in os.walk(src):
-        for f in fs:
-            if f in photo_map:
-                t = os.path.join(pdir, f)
-                if not os.path.exists(t):
-                    shutil.copy2(os.path.join(d, f), t)
-                copied += 1; size += os.path.getsize(t)
-    print('фото скопировано в', pdir, ':', copied, 'шт.,', round(size / 1048576), 'МБ')
+    base = os.path.dirname(os.path.abspath(dst))
+    loose = {os.path.basename(p) for p in build.loose}
+    for sub, names in (('фото', set(photo_map)), ('фото_без_заявки', loose)):
+        pdir = os.path.join(base, sub)
+        os.makedirs(pdir, exist_ok=True)
+        for f in os.listdir(pdir):            # убрать то, что сюда больше не относится
+            if f not in names:
+                os.remove(os.path.join(pdir, f))
+        copied, size = 0, 0
+        for d, _, fs in os.walk(src):
+            for f in fs:
+                if f in names:
+                    t = os.path.join(pdir, f)
+                    if not os.path.exists(t):
+                        shutil.copy2(os.path.join(d, f), t)
+                    copied += 1; size += os.path.getsize(t)
+        print('папка', sub, ':', copied, 'шт.,', round(size / 1048576), 'МБ')
     print('техника:', dict(collections.Counter(o['device'] or '—' for o in orders)))
     print('не разобрано (обезличено):', len(unparsed))
     for u in unparsed[:15]:
