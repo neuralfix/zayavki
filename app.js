@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.12'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.13'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -637,19 +637,17 @@ async function openViewer(photoId, o, box) {
 }
 
 function plateDialog(r, cur) {
-  const guess = [r.brand, r.models[0]].filter(Boolean).join(' ');
+  const guess = r.models[0] ? plateLabel(r.brand, r.models[0]) : r.brand;
   return formDialog('Модель с шильдика', `
+    ${r.note ? `<p class="small warn-text" style="margin-top:0">${esc(r.note)}</p>` : ''}
     ${r.models.length ? `<p class="note" style="margin-top:0">Нажмите подходящую и сверьте буквы и цифры с фото:</p>
-      <div class="chips" style="margin-bottom:10px">${r.models.map((m) => `<button type="button" class="chip" data-m="${esc(m)}" data-k="model">${esc(m)}</button>`).join('')}</div>`
+      <div class="chips" style="margin-bottom:10px">${r.models.map((m) => `<button type="button" class="chip" data-m="${esc(plateLabel(r.brand, m))}">${esc(m)}</button>`).join('')}</div>`
       : '<p class="note" style="margin-top:0">Модель не нашлась. Выберите строку из текста ниже или впишите вручную. Лучше всего читается снимок прямо, без блика.</p>'}
     <div class="field"><label>Марка / модель</label><input class="input" name="model" value="${esc(guess || cur)}" autocapitalize="characters"></div>
     ${cur && cur !== guess ? `<p class="note" style="margin-top:-4px">Сейчас записано: ${esc(cur)}</p>` : ''}
     ${r.lines.length ? `<details class="tg"><summary>Весь текст с шильдика</summary>
       <div class="chips" style="margin-top:8px">${r.lines.map((l) => `<button type="button" class="chip" data-m="${esc(l)}">${esc(l)}</button>`).join('')}</div></details>` : ''}`,
-  (d) => $$('[data-m]', d).forEach((b) => b.onclick = () => {
-    const m = b.dataset.m;
-    $('[name=model]', d).value = b.dataset.k === 'model' && r.brand ? r.brand + ' ' + m : m;
-  }));
+  (d) => $$('[data-m]', d).forEach((b) => b.onclick = () => { $('[name=model]', d).value = b.dataset.m; }));
 }
 
 // ---------- Закрытие заявки ----------
@@ -973,6 +971,8 @@ async function renderSettings() {
 
   const tgLeft = Object.keys((await getMeta('tgPhotoMap')) || {}).length;
   const visitHours = Number(await getMeta('visitHours')) || 1.5;
+  const ocrUrl = (await getMeta('ocrUrl')) || '';
+  const ocrKey = (await getMeta('ocrKey')) || '';
 
   view.innerHTML = `
     <div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
@@ -998,6 +998,17 @@ async function renderSettings() {
       <label class="btn sec">2. Добавить фото к заявкам<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
       <p class="note">После импорта удалите файл и папку с фото из телефона: они не зашифрованы.</p>
     </div>
+    <div class="card"><h2>Считывание шильдиков</h2>
+      <p class="small" style="margin-top:0">Кнопка «Считать модель» на фото. Точно читает распознавание Яндекса через вашу функцию в Яндекс Облаке.
+        Отправляется только то фото, на котором вы нажали кнопку, — без места съёмки.</p>
+      <div class="field"><label>Ссылка функции</label>
+        <input class="input" id="ocrUrl" inputmode="url" autocomplete="off" placeholder="https://functions.yandexcloud.net/…" value="${esc(ocrUrl)}"></div>
+      <div class="field"><label>Секретный ключ <span class="muted">— тот же, что APP_KEY в функции</span></label>
+        <input class="input" id="ocrKey" type="password" autocomplete="off" value="${esc(ocrKey)}"></div>
+      <div class="btns"><button class="btn" id="ocrSave">Сохранить</button><button class="btn sec" id="ocrTest">Проверить</button></div>
+      <p class="note">${ocrUrl && ocrKey ? '✓ Настроено.' : 'Не настроено — тогда фото читается прямо в телефоне, но заметно хуже.'}
+        Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
+    </div>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
         <span>Версия</span><b>${APP_VERSION}</b>
@@ -1011,6 +1022,34 @@ async function renderSettings() {
     <p class="note">Справочник улиц: © участники OpenStreetMap (ODbL)</p>`;
 
   $('#visitHours').onchange = async (e) => { await setMeta('visitHours', Number(e.target.value)); toast('Сохранено'); };
+
+  // Считывание шильдиков через Яндекс
+  const ocrRead = () => ({ url: $('#ocrUrl').value.trim(), key: $('#ocrKey').value.trim() });
+  const ocrOk = (c) => {
+    if (c.url && !/^https:\/\/functions\.yandexcloud\.net\/[\w-]+\/?$/.test(c.url)) { toast('Ссылка должна быть вида https://functions.yandexcloud.net/…', 4000); return false; }
+    if (c.url && c.key.length < 12) { toast('Ключ слишком короткий — нужен тот же, что APP_KEY в функции', 4000); return false; }
+    return true;
+  };
+  $('#ocrSave').onclick = async () => {
+    const c = ocrRead(); if (!ocrOk(c)) return;
+    await setMeta('ocrUrl', c.url || null); await setMeta('ocrKey', c.url ? c.key : null);
+    toast(c.url ? 'Сохранено' : 'Отключено'); renderSettings();
+  };
+  $('#ocrTest').onclick = async (e) => {
+    const c = ocrRead(); if (!c.url || !ocrOk(c)) { if (!c.url) toast('Вставьте ссылку и ключ'); return; }
+    const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
+    try {
+      // проверочная картинка с надписью — не фото клиента
+      const cv = document.createElement('canvas'); cv.width = 900; cv.height = 260;
+      const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 900, 260);
+      g.fillStyle = '#000'; g.font = 'bold 64px Arial'; g.fillText('MODEL TEST-123', 40, 150);
+      const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.9));
+      const text = await cloudOcrText(blob, c);
+      if (/123/.test(text)) { await setMeta('ocrUrl', c.url); await setMeta('ocrKey', c.key); toast('Работает: Яндекс прочитал «' + text.trim().slice(0, 30) + '». Сохранено.', 5000); renderSettings(); }
+      else toast('Функция ответила, но текст не прочитан: «' + text.slice(0, 40) + '»', 5000);
+    } catch (err) { toast(err.message, 6000); }
+    b.disabled = false; b.textContent = 'Проверить';
+  };
   $('#checkUpd').onclick = async (e) => {
     const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
     const l = await latestVersion();

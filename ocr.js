@@ -1,5 +1,5 @@
-// Считывание модели с фото шильдика. Работает прямо в телефоне (Tesseract), фото никуда не отправляется.
-// Файлы распознавания (~10 МБ) лежат в vendor/ocr, скачиваются один раз и дальше работают без интернета.
+// Считывание модели с фото шильдика: через Яндекс (функция владельца в Яндекс Облаке) или прямо в телефоне (Tesseract).
+// Файлы распознавания (~10 МБ) лежат в vendor/ocr — запасной вариант без интернета. Точно читает Яндекс через функцию владельца.
 'use strict';
 
 const OCR_BASE = new URL('vendor/ocr/', location.href).href;
@@ -77,18 +77,21 @@ async function _plateCanvas(blob, rotate, mode) {
   return c;
 }
 
-// ---------- Разбор текста ----------
+// ---------- Разбор текста: где на наклейке марка, а где модель ----------
 const OCR_BRANDS = ['Samsung', 'LG', 'Atlant', 'Indesit', 'Bosch', 'Siemens', 'Beko', 'Haier', 'Hotpoint', 'Ariston', 'Stinol',
   'Liebherr', 'Electrolux', 'Whirlpool', 'Candy', 'Gorenje', 'Sharp', 'Hisense', 'Zanussi', 'Pozis', 'Biryusa', 'Nord',
   'Daewoo', 'Midea', 'TCL', 'Xiaomi', 'Philips', 'Sony', 'Panasonic', 'Toshiba', 'Dexp', 'BBK', 'Supra', 'Thomson',
   'Telefunken', 'Polar', 'Weissgauff', 'Kuppersberg', 'AEG', 'Vestel', 'Smeg', 'Hansa', 'Korting', 'Shivaki', 'Leran',
   'Hyundai', 'Asko', 'Miele', 'Maunfeld', 'Hitachi', 'Mitsubishi', 'Sanyo', 'Vestfrost', 'Snaige', 'Saratov', 'Sviyaga',
   'Minsk', 'Bauknecht', 'Kaiser', 'Neff', 'Grundig', 'Akai', 'Erisson', 'Harper', 'Yandex', 'Tesler', 'Skyworth'];
-const OCR_BRAND_RU = { 'АТЛАНТ': 'Atlant', 'БИРЮСА': 'Biryusa', 'ПОЗИС': 'Pozis', 'СТИНОЛ': 'Stinol', 'САРАТОВ': 'Saratov',
-  'СВИЯГА': 'Sviyaga', 'МИНСК': 'Minsk', 'НОРД': 'Nord', 'ИНДЕЗИТ': 'Indesit', 'АРИСТОН': 'Ariston' };
-// Похожие буквы: в модели «ХМ 4021» и «XM 4021» — одно и то же. Модели пишем латиницей.
-const CYR2LAT = { 'А': 'A', 'В': 'B', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'С': 'C', 'Т': 'T', 'Х': 'X', 'У': 'Y', 'З': '3', 'Ё': 'E' };
+// Русские названия: показываем как на наклейке
+const OCR_BRAND_RU = { 'АТЛАНТ': 'Атлант', 'БИРЮСА': 'Бирюса', 'ПОЗИС': 'Позис', 'СТИНОЛ': 'Стинол', 'САРАТОВ': 'Саратов',
+  'СВИЯГА': 'Свияга', 'МИНСК': 'Минск', 'НОРД': 'Норд', 'ИНДЕЗИТ': 'Индезит', 'ЗИЛ': 'ЗИЛ', 'ДОНБАСС': 'Донбасс',
+  'ОКА': 'Ока', 'ЮРЮЗАНЬ': 'Юрюзань', 'СМОЛЕНСК': 'Смоленск', 'ОРСК': 'Орск', 'ПОЛЮС': 'Полюс', 'МИР': 'Мир' };
+// Похожие буквы: «ХМ-4021» и «XM-4021» — одно и то же; если слово целиком из таких букв — пишем латиницей
+const CYR2LAT = { 'А': 'A', 'В': 'B', 'Е': 'E', 'К': 'K', 'М': 'M', 'Н': 'H', 'О': 'O', 'Р': 'P', 'С': 'C', 'Т': 'T', 'Х': 'X', 'У': 'Y', 'Ё': 'E' };
 const _lat = (s) => s.toUpperCase().replace(/[А-ЯЁ]/g, (ch) => CYR2LAT[ch] || ch);
+const _latIfCan = (s) => { const l = _lat(s); return /[А-ЯЁ]/.test(l) ? s.toUpperCase() : l; };
 
 function _lev(a, b) {
   const m = a.length; const n = b.length; if (Math.abs(m - n) > 1) return 9;
@@ -100,63 +103,154 @@ function _lev(a, b) {
   return row[n];
 }
 
-function _findBrand(words) {
-  for (const w of words) {
-    const u = w.toUpperCase().replace(/[^A-ZА-ЯЁ0-9]/g, '');
-    if (u.length < 2) continue;
-    const L = _lat(u); // на шильдике бывают вперемешку русские и латинские буквы
-    for (const [ru, b] of Object.entries(OCR_BRAND_RU)) { const R = _lat(ru); if (L === R || (R.length >= 5 && _lev(L, R) <= 1)) return b; }
-    for (const b of OCR_BRANDS) {
-      const B = b.toUpperCase();
-      if (L === B || (B.length >= 5 && _lev(L, B) <= 1)) return b;
-    }
-  }
+// Слово → марка или ''
+function _brandOf(w) {
+  const u = String(w).toUpperCase().replace(/[^A-ZА-ЯЁ0-9]/g, '');
+  if (u.length < 2) return '';
+  for (const [ru, b] of Object.entries(OCR_BRAND_RU)) if (u === ru || (ru.length >= 6 && _lev(u, ru) <= 1)) return b;
+  const L = _lat(u); // на наклейке бывают вперемешку русские и латинские буквы
+  for (const b of OCR_BRANDS) { const B = b.toUpperCase(); if (L === B || (B.length >= 6 && _lev(L, B) <= 1)) return b; }
   return '';
 }
 
-// Не модель: напряжение, мощность, частота, хладагент, класс защиты, вес, дата
-const OCR_NOT_MODEL = [/^\d+([.,]\d+)?(V|VAC|W|KW|KWH|HZ|KG|L|A|MA|MM|CM|G|DB|DBA|BAR|MPA)$/, /^\d{2,3}[-/~]\d{2,3}V/,
-  /^R-?\d{3}[A-Z]?$/, /^IP\d{1,2}$/, /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/, /^(SN|S\/N|SIN)\b/, /^CLASS/, /^\d+([-/.]\d+)*$/];
-const OCR_KEY = /(MODEL|MODE1|M0DEL|MOD[.:]|TYPE|TYP\b|МОДЕЛЬ|МОДЕЛ|ТИП\b)/i;
-const OCR_SERIAL = /(SERIAL|S\/N|\bSN\b|\bSIN\b|№|\bNO[.:]|ЗАВ|СЕРИЙ|BAR ?CODE)/i;
+// Что точно не модель: напряжение, мощность, частота, вес, объём, хладагент, класс, даты, стандарты, типы по ГОСТ
+const OCR_NOT_MODEL = [/^\d+([.,]\d+)?(V|VAC|W|KW|KWH|HZ|KG|L|A|MA|MM|CM|G|DB|DBA|BAR|MPA|LM|В|ВТ|КВТ|ГЦ|КГ|Л|А|МА|ММ|СМ|Г|ДМ3|DM3|ГР)$/,
+  /^\d{2,3}[-/~]\d{2,3}(V|В|B)/, /\/(24H|24Ч|СУТ|DAY)$/, /^KГ?G?\/\d/, /^KG\/\d/, /^(R|ХЛАДОН|XЛAДOH|FREON|ФРЕОН)[-.]?\d/, /CH3/, /^IP\d/, /^УХЛ/, /^FD:?\d{4}$/,
+  /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/, /^\d+([-/.]\d+)*$/, /^(SN|S\/N|SIN|N|NO)\d/, /^(CLASS|КЛАСС)/, /^(РБ|УП|EN|ТУ|ГОСТ|СТБ)\d/,
+  /^\d+[.,]\d+$/, /^A\+*$/, /^\d+([.,]\d+)?(BT|KBT|B|KГ|БАР|BAR|DM|ДM|M3)$/, /(РБ|УП|PБ|YП)\d{2}/, /[A-ZА-ЯЁ]\.[A-ZА-ЯЁ]\./,
+  /^\d+([.,]\d+)?\/\d+([.,]\d+)?(DM|ДM|ДМ|Л|L|БАР|BAR)?$/, /^(ДМ|ДM|DM|M)3$/, /^\d+(Л|L)?\/\d+(Л|L)$/];
+// Единицы и подписи — не начало модели: «Hz 110», «W 210W», «Max 15W»
+const OCR_UNIT_WORD = /^(HZ|W|V|A|L|G|KG|MAX|BT|ГЦ|KГ|Л|Г|B|DM|ДM|БAP|BAR|N|NO|TY|ГOCT|CTБ|EN|R|IP|YXЛ|SN|ST|T|C|Д)$/;
+const OCR_KEY = /(MODEL(UL)?|MODE1|M0DEL|MOD\s*[.:]|E-?NR\.?|МОДЕЛЬ)\s*[:.]?/i;
+const OCR_TYPE_KEY = /(TYPE\b|TYP\b|ТИП(?![А-Яа-яЁё]))\s*[:.]?/i;   // «Тип» — слабее «Модели»
+const OCR_SERIAL = /(SERIAL(\s*NO)?|S\/N|\bSN\b|№|N°|(^|\s)N\.?\s+(?=\d)|\bNO[.:]|ЗАВ\.?|СЕРИЙН\S*\s*НОМЕР|I\.C\.|Z-NR|BAR\s?CODE|ДАТА)/i;
+const OCR_STD = /(^|\s)(ТУ|TU|ГОСТ|СТБ|EN)(\s+РБ)?\s+\d/i;
+const OCR_DEVICE = /(ХОЛОДИЛЬНИК|МОРОЗИЛЬНИК|REFRIGERATOR|FREEZER|СТИРАЛЬН|WASHING|ТЕЛЕВИЗОР|ЛАРЬ)/i;
+const OCR_GOST_TYPE = /^(КШД|КШТ|МКШ|КШ|КС|КХ|МК|ДХ)[-\s]?\d/;
 
 function plateCandidates(text) {
-  const lines = String(text || '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim())
-    .filter((l) => l.replace(/[^A-Za-zА-Яа-яЁё0-9]/g, '').length >= 3);
-  const brand = _findBrand(lines.join(' ').split(' '));
+  const lines = String(text || '').split('\n').map((l) => l.replace(/\s+/g, ' ').replace(/\s*[–—-]\s*/g, '-').trim())
+    .filter((l) => l.replace(/[^A-Za-zА-Яа-яЁё0-9]/g, '').length >= 2);
+  let brand = '';
+  for (const w of lines.join(' ').split(/[^A-Za-zА-Яа-яЁё0-9]+/)) { brand = _brandOf(w); if (brand) break; }
   const score = new Map();
-  const add = (raw, s) => {
-    const t = _lat(raw).replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, '');
-    if (t.length < 4 || t.length > 22) return;
-    if (/[^A-Z0-9\-/. ]/.test(t)) return;            // мусор распознавания
-    if (!/\d/.test(t) || !/[A-Z]/.test(t)) return;   // модель — это буквы и цифры вместе
-    if (OCR_NOT_MODEL.some((r) => r.test(t))) return;
-    if (brand && t === brand.toUpperCase()) return;
+  const add = (raw, s, afterBrand) => {
+    let t = String(raw).replace(/[«»"“”„()[\]{}]/g, ' ').replace(/\s+/g, ' ').trim()
+      .replace(/^[^A-Za-zА-Яа-яЁё0-9]+|[^A-Za-zА-Яа-яЁё0-9]+$/g, '');
+    t = _latIfCan(t);
+    if (t.replace(/[^A-ZА-ЯЁ0-9]/g, '').length < 3 || t.length > 24) return;
+    if (/[^A-ZА-ЯЁ0-9\-/. ]/.test(t) || !/\d/.test(t)) return;
+    const c = t.replace(/\s+/g, '');
+    if (afterBrand && /^\d{2,5}$/.test(c)) { score.set(t, Math.max(score.get(t) ?? -99, s)); return; } // «Бирюса 118»
+    if (OCR_NOT_MODEL.some((r) => r.test(c))) return;
     let v = s;
-    const dig = (t.match(/\d/g) || []).length / t.length;
-    if (dig > 0.75 && t.length > 9) v -= 3;          // похоже на серийный номер
-    if (/^[A-Z]{1,5}[- ]?\d/.test(t)) v += 1;        // буквы, потом цифры — обычный вид модели
-    if (t.length >= 6 && t.length <= 16) v += 1;
+    const dig = (t.match(/\d/g) || []).length / t.replace(/\W/g, '').length;
+    if (dig > 0.75 && t.length > 8) v -= 3;            // похоже на серийный номер
+    if (!/[A-ZА-ЯЁ]/.test(t)) v -= 2;                    // одни цифры — модель только рядом с маркой
+    if (OCR_GOST_TYPE.test(t)) v -= 3;                   // КШД-280/45 — тип по ГОСТ, не модель
+    if (t.length >= 5 && t.length <= 16) v += 1;
     score.set(t, Math.max(score.get(t) ?? -99, v));
   };
+  let keyNext = 0, devNext = 0;
   lines.forEach((l) => {
-    const key = OCR_KEY.exec(l);
-    const serial = OCR_SERIAL.test(l) && !key;
-    const base = key ? 1 : serial ? -4 : 0;
-    const after = key ? l.slice(key.index + key[0].length) : '';
+    const U = l.toUpperCase();
+    const tokens = l.split(' ');
+    // позиции: после «Модель:», после номера (серийный), после ТУ/ГОСТ, после слова «Холодильник»
+    const key = OCR_KEY.exec(l) || OCR_TYPE_KEY.exec(l); const keyEnd = key ? key.index + key[0].length : -1;
+    const keyW = key && OCR_KEY.test(l) ? 4 : 2;
+    const ser = OCR_SERIAL.exec(l); const serAt = ser ? ser.index : Infinity;
+    const std = OCR_STD.exec(l); const stdAt = std ? std.index : Infinity;
+    const dev = OCR_DEVICE.exec(U); const devEnd = dev ? dev.index + dev[0].length : -1;
+    const bonusAt = (pos) => (pos >= serAt || pos >= stdAt) ? -6 : (key && pos >= keyEnd ? keyW : 0) + (dev && pos >= devEnd ? 2 : 0) + keyNext + devNext;
+    let pos = 0, first = true;
+    tokens.forEach((tk, i) => {
+      const at = l.indexOf(tk, pos); pos = at + tk.length;
+      // марка, а за ней модель: «Бирюса 118», «POZIS RK FNF-172», «STINOL-104»
+      const head = tk.split(/[-«»"]/).filter(Boolean)[0] || '';
+      if (head && _brandOf(head) && /\d/.test(tk.slice(tk.indexOf(head) + head.length))) add(tk, 5); // «STINOL-104»
+      if (_brandOf(tk.split(/[-«»"]/)[0])) {
+        const rest = tokens.slice(i + 1, i + 4).join(' ').split(/\s(?=(?:КШ|УХЛ|ТУ|ГОСТ|№|N\s))/)[0];
+        if (/\d/.test(rest) && at < serAt && at < stdAt) add(rest, 5 + (dev ? 1 : 0), true);
+      }
+      const b = bonusAt(at) + (first ? 1 : 0);
+      add(tk, b);
+      if (/^[«"„“]/.test(tk) || /[»"”]$/.test(tk)) add(tk, b + 3);      // модель в кавычках: «ЗИЛ-63»
+      if (/\d/.test(tk)) first = false;
+    });
     // «ХМ 4021-000», «GA B419» — короткие буквы отдельно от цифр
-    for (const m of l.matchAll(/(?:^|\s)([A-Za-zА-ЯЁа-яё]{1,4})[\s-](\d{3,5}(?:[-/.]\d{1,4})*[A-Za-z0-9]{0,6})(?=\s|$)/g)) {
-      add(m[1] + ' ' + m[2], base + (key ? 3 : 1));
+    for (const m of l.matchAll(/(?:^|\s)([A-ZА-ЯЁ]{1,4})[\s-](\d{2,5}(?:[-/.]\d{1,4})*[A-Za-z0-9]{0,6})(?=\s|$)/g)) {
+      if (!OCR_UNIT_WORD.test(_lat(m[1]))) add(m[1] + '-' + m[2], bonusAt(l.indexOf(m[0].trim())) + 1);
     }
-    for (const w of l.split(' ')) add(w.replace(/[:;,]/g, ''), base + (key && after.includes(w) ? 3 : 0));
+    // строка, где только модель: «ITF 020 S», «ES 15 A», «HBD1201.3XNFH»
+    if (l.length <= 16 && tokens.length <= 3 && /\d/.test(l) && /[A-Za-zА-Яа-я]/.test(l) && !ser && !std &&
+      !OCR_UNIT_WORD.test(_lat(tokens[0])) && !_brandOf(tokens[0])) add(l, 3 + keyNext + devNext);
+    keyNext = key && !/\d/.test(l.slice(keyEnd)) ? 3 : 0;  // «Модель/Үлгісі» — а сама модель на следующей строке
+    devNext = dev && !/\d/.test(l.slice(devEnd)) ? 2 : 0;  // «ХОЛОДИЛЬНИК» — модель строкой ниже
   });
-  const models = [...score.entries()].filter(([, v]) => v > -2).sort((a, b) => b[1] - a[1]).map(([t]) => t)
-    .filter((t, i, arr) => !arr.slice(0, i).some((x) => x.includes(t))).slice(0, 4);
-  return { brand, models, lines: lines.slice(0, 14) };
+  const B = brand ? _lat(brand.toUpperCase()) : '';
+  const models = [...score.entries()].filter(([, v]) => v > -1).sort((a, b) => b[1] - a[1]).map(([t]) => t)
+    .filter((t, i, arr) => !arr.slice(0, i).some((x) => x.replace(/\W/g, '').includes(t.replace(/\W/g, ''))))
+    .filter((t) => !B || _lat(t) !== B).slice(0, 4);
+  return { brand, models, lines: lines.slice(0, 16) };
+}
+
+// Марка + модель для записи в заявку (без повтора: «STINOL-104», а не «Stinol STINOL-104»)
+function plateLabel(brand, model) {
+  if (!brand) return model;
+  const b = _lat(brand.toUpperCase());
+  return _lat(model.toUpperCase()).startsWith(b) ? model : brand + ' ' + model;
+}
+
+// ---------- Распознавание через Яндекс (ваша функция в Яндекс Облаке) ----------
+async function ocrCloudConf() {
+  const url = await getMeta('ocrUrl'); const key = await getMeta('ocrKey');
+  return url && key ? { url, key } : null;
+}
+
+// Фото заново сжимается: так из него пропадает место съёмки и прочие служебные данные
+async function _jpegBase64(blob) {
+  const bmp = await createImageBitmap(blob);
+  const k = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close && bmp.close();
+  return c.toDataURL('image/jpeg', 0.88).split(',')[1];
+}
+
+async function cloudOcrText(blob, conf) {
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 40000);
+  try {
+    const r = await fetch(conf.url, { method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'X-App-Key': conf.key },
+      body: JSON.stringify({ image: await _jpegBase64(blob) }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error ? 'Яндекс: ' + j.error : 'Яндекс ответил ошибкой ' + r.status);
+    return j.text || (j.lines || []).join('\n');
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Яндекс не ответил за 40 секунд');
+    if (e instanceof TypeError) throw new Error('Нет связи с функцией в Яндексе: проверьте интернет и ссылку');
+    throw e;
+  } finally { clearTimeout(timer); }
 }
 
 // Распознать фото. onStep(текст) — для надписи на кнопке.
+// Настроен Яндекс и есть интернет — читает Яндекс (точно). Иначе — прямо в телефоне (заметно хуже).
 async function readPlate(blob, onStep) {
+  const conf = await ocrCloudConf();
+  if (conf && navigator.onLine) {
+    onStep && onStep('Читаю через Яндекс…');
+    const r = plateCandidates(await cloudOcrText(blob, conf));
+    r.source = 'cloud';
+    return r;
+  }
+  const r = await _readLocal(blob, onStep);
+  r.note = conf ? 'Нет интернета — прочитано прямо в телефоне, проверьте внимательно.'
+    : 'Прочитано прямо в телефоне — это неточно. Точное чтение через Яндекс включается в «Диск» → «Считывание шильдиков».';
+  return r;
+}
+
+async function _readLocal(blob, onStep) {
   let pass = 0;
   _ocrProgress = (m) => {
     if (m.status === 'recognizing text') onStep && onStep('Читаю… ' + (pass > 1 ? '(' + pass + ') ' : '') + Math.round((m.progress || 0) * 100) + '%');
@@ -180,11 +274,6 @@ async function readPlate(blob, onStep) {
         if (r.rank > best.rank) best = r;
         if (r.confidence >= 75 && r.models.length) break;
       }
-    }
-    // Мутное фото — ещё раз в чёрно-белом
-    if (best.confidence < 75 || !best.models.length) {
-      const r = await run(best.rot, 'bw');
-      if (r.rank > best.rank) best = r;
     }
     return best;
   } finally { _ocrProgress = null; }
