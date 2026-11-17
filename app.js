@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.14'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.15'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -1005,7 +1005,9 @@ async function renderSettings() {
       <div class="field"><label>Ссылка функции</label>
         <input class="input" id="ocrUrl" inputmode="url" autocomplete="off" placeholder="https://functions.yandexcloud.net/…" value="${esc(ocrUrl)}"></div>
       <div class="field"><label>Секретный ключ <span class="muted">— тот же, что APP_KEY в функции</span></label>
-        <input class="input" id="ocrKey" type="password" autocomplete="off" value="${esc(ocrKey)}"></div>
+        <input class="input" id="ocrKey" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(ocrKey)}">
+        <label class="small muted show" style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="ocrShow"> показать ключ
+          <span id="ocrLen" style="margin-left:auto"></span></label></div>
       <div class="btns"><button class="btn" id="ocrSave">Сохранить</button><button class="btn sec" id="ocrTest">Проверить</button></div>
       <p class="note">${ocrUrl && ocrKey ? '✓ Настроено.' : 'Не настроено — тогда фото читается прямо в телефоне, но заметно хуже.'}
         Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
@@ -1026,6 +1028,9 @@ async function renderSettings() {
 
   // Считывание шильдиков через Яндекс
   const ocrRead = () => ({ url: $('#ocrUrl').value.trim(), key: $('#ocrKey').value.trim() });
+  const ocrLen = () => { const n = $('#ocrKey').value.trim().length; $('#ocrLen').textContent = n ? 'символов: ' + n : ''; };
+  $('#ocrShow').onchange = (e) => { $('#ocrKey').type = e.target.checked ? 'text' : 'password'; };
+  $('#ocrKey').addEventListener('input', ocrLen); ocrLen();
   const ocrOk = (c) => {
     if (c.url && !/^https:\/\/functions\.yandexcloud\.net\/[\w-]+\/?$/.test(c.url)) { toast('Ссылка должна быть вида https://functions.yandexcloud.net/…', 4000); return false; }
     if (c.url && c.key.length < 12) { toast('Ключ слишком короткий — нужен тот же, что APP_KEY в функции', 4000); return false; }
