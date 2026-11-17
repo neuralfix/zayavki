@@ -621,12 +621,16 @@ async function renderSettings() {
     <p class="small">Подключается один раз. После этого заявки и фото сами уходят на ваш Яндекс Диск, когда есть интернет. Уходят в зашифрованном виде.</p>
     <ol class="steps">
       <li>Откройте <a href="https://oauth.yandex.ru/client/new" target="_blank" rel="noopener">oauth.yandex.ru/client/new</a> и войдите в свой Яндекс.</li>
-      <li>Название: <b>Мои заявки</b>. Платформа: <b>Веб-сервисы</b>.</li>
-      <li>Redirect URI — вставьте этот адрес:<code class="copy" id="ru">${esc(redirectUri())}</code></li>
-      <li>Доступ: <b>Яндекс Диск REST API → Доступ к папке приложения на Диске</b>.</li>
-      <li>Создайте приложение и скопируйте <b>ClientID</b> сюда:</li>
+      <li>Тип приложения: <b>Для доступа к API или отладки</b>.</li>
+      <li>Название: <b>Мои заявки</b>. Почта — ваша.</li>
+      <li>Доступ: <b>Доступ к Яндекс.Диску для приложений</b> (только к своей папке). Больше ничего.</li>
+      <li>Адрес возврата не меняйте. Нажмите «Создать приложение» и скопируйте <b>ClientID</b> сюда:</li>
     </ol>
-    <div class="field"><input class="input" id="cid" placeholder="ClientID" value="${esc(clientId)}"></div>
+    <div class="field"><input class="input" id="cid" placeholder="ClientID" value="${esc(clientId)}" autocomplete="off"></div>
+    <button class="btn sec" id="getToken">Получить ключ доступа</button>
+    <p class="note">Откроется страница Яндекса. Разрешите доступ, и Яндекс покажет длинный ключ (токен).
+      Скопируйте его, вернитесь сюда и вставьте:</p>
+    <div class="field"><input class="input" id="token" placeholder="Ключ доступа" autocomplete="off"></div>
     <button class="btn" id="connect">Подключить Яндекс Диск</button>`;
 
   view.innerHTML = `
@@ -644,7 +648,7 @@ async function renderSettings() {
         Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
       <button class="btn sec" id="csv">Скачать таблицу заявок</button>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.1</p>`;
+    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.2</p>`;
 
   const sp = $('#setPw'); if (sp) sp.onclick = async () => {
     const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
@@ -660,12 +664,28 @@ async function renderSettings() {
     toast('Проверяю…');
     toast(await checkPassword(pw) ? '✓ Пароль верный' : '✗ Не тот пароль');
   };
-  const ru = $('#ru'); if (ru) ru.onclick = () => navigator.clipboard?.writeText(redirectUri()).then(() => toast('Адрес скопирован'));
-  const c = $('#connect'); if (c) c.onclick = async () => {
+  const gt = $('#getToken'); if (gt) gt.onclick = async () => {
     const id = $('#cid').value.trim();
     if (!/^[0-9a-f]{32}$/i.test(id)) { toast('ClientID — это 32 символа из букв и цифр'); return; }
     await setMeta('ydClientId', id);
-    location.href = 'https://oauth.yandex.ru/authorize?response_type=token&client_id=' + id + '&redirect_uri=' + encodeURIComponent(redirectUri());
+    // У приложений «для доступа к API» Яндекс показывает ключ на своей странице (verification_code).
+    window.open('https://oauth.yandex.ru/authorize?response_type=token&client_id=' + id, '_blank', 'noopener');
+  };
+  const c = $('#connect'); if (c) c.onclick = async () => {
+    let token = $('#token').value.trim();
+    const m = token.match(/access_token=([^&\s]+)/); if (m) token = m[1]; // вставили всю ссылку целиком
+    if (token.length < 20 || /\s/.test(token)) { toast('Вставьте ключ со страницы Яндекса'); return; }
+    c.disabled = true; c.textContent = 'Проверяю ключ…';
+    try {
+      await ydMkdir(token, ROOT); // заодно создаёт папку приложения на Диске
+    } catch (e) {
+      toast(e instanceof AuthError ? 'Яндекс не принял ключ — получите новый' : e.message);
+      c.disabled = false; c.textContent = 'Подключить Яндекс Диск';
+      return;
+    }
+    toast('Яндекс Диск подключён');
+    await onDiskConnected(token);
+    updateSyncBadge(); renderSettings(); requestSync();
   };
   const sn = $('#syncNow'); if (sn) sn.onclick = async () => {
     sn.disabled = true; sn.textContent = 'Отправляю…';
@@ -735,10 +755,14 @@ async function handleOAuthReturn() {
     return;
   }
   const p = new URLSearchParams(location.hash.slice(1));
-  await setMeta('ydToken', p.get('access_token'));
-  await setMeta('syncError', null);
   history.replaceState(null, '', location.pathname + '#/settings');
   toast('Яндекс Диск подключён');
+  await onDiskConnected(p.get('access_token'));
+}
+
+async function onDiskConnected(token) {
+  await setMeta('ydToken', token);
+  await setMeta('syncError', null);
   const hasLocal = (await dbAll('orders')).length + (await dbAll('expenses')).length > 0;
   if (hasLocal) { await markDirty(); return; } // при первом подключении отправить всё
   // Телефон пустой — возможно, это новый телефон, а копия уже есть на Диске.
