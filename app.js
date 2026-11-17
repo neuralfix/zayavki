@@ -631,7 +631,8 @@ async function renderSettings() {
     <p class="note">Откроется страница Яндекса. Разрешите доступ, и Яндекс покажет длинный ключ (токен).
       Скопируйте его, вернитесь сюда и вставьте:</p>
     <div class="field"><input class="input" id="token" placeholder="Ключ доступа" autocomplete="off"></div>
-    <button class="btn" id="connect">Подключить Яндекс Диск</button>`;
+    <button class="btn" id="connect">Подключить Яндекс Диск</button>
+    <p class="small neg" id="connErr" hidden></p>`;
 
   view.innerHTML = `
     <div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
@@ -648,7 +649,7 @@ async function renderSettings() {
         Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
       <button class="btn sec" id="csv">Скачать таблицу заявок</button>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.2</p>`;
+    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.3</p>`;
 
   const sp = $('#setPw'); if (sp) sp.onclick = async () => {
     const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
@@ -672,16 +673,29 @@ async function renderSettings() {
     window.open('https://oauth.yandex.ru/authorize?response_type=token&client_id=' + id, '_blank', 'noopener');
   };
   const c = $('#connect'); if (c) c.onclick = async () => {
-    let token = $('#token').value.trim();
+    const errBox = $('#connErr');
+    const fail = (msg) => { errBox.textContent = msg; errBox.hidden = false; c.disabled = false; c.textContent = 'Подключить Яндекс Диск'; };
+    errBox.hidden = true;
+    let token = $('#token').value.trim().replace(/^["'«]|["'»]$/g, '');
     const m = token.match(/access_token=([^&\s]+)/); if (m) token = m[1]; // вставили всю ссылку целиком
-    if (token.length < 20 || /\s/.test(token)) { toast('Вставьте ключ со страницы Яндекса'); return; }
+    if (!token) return fail('Поле «Ключ доступа» пустое. Вставьте ключ со страницы Яндекса.');
+    if (token === $('#cid').value.trim() || /^[0-9a-f]{32}$/i.test(token)) {
+      return fail('Это ClientID, а нужен другой, более длинный ключ. Нажмите «Получить ключ доступа», разрешите доступ и скопируйте ключ, который покажет Яндекс.');
+    }
+    if (token.length < 20 || /\s/.test(token)) return fail('Похоже, ключ скопирован не целиком (' + token.length + ' символов). Скопируйте его ещё раз кнопкой «Копировать» на странице Яндекса.');
     c.disabled = true; c.textContent = 'Проверяю ключ…';
+    let r;
     try {
-      await ydMkdir(token, ROOT); // заодно создаёт папку приложения на Диске
+      r = await ydFetch(token, '/resources?limit=1&path=' + encodeURIComponent(ROOT));
     } catch (e) {
-      toast(e instanceof AuthError ? 'Яндекс не принял ключ — получите новый' : e.message);
-      c.disabled = false; c.textContent = 'Подключить Яндекс Диск';
-      return;
+      if (e instanceof AuthError) return fail('Яндекс не принял ключ (ошибка 401). Нажмите «Получить ключ доступа» ещё раз и вставьте новый ключ целиком.');
+      return fail(e.message + '. Проверьте интернет (и VPN: попробуйте его выключить) и нажмите ещё раз.');
+    }
+    // 404 — папки приложения ещё нет, она появится при первой отправке
+    if (!(r.ok || r.status === 404)) {
+      let d = ''; try { const j = await r.json(); d = j.message || j.description || ''; } catch (e) { /* пусто */ }
+      return fail('Яндекс ответил ошибкой ' + r.status + (d ? ': ' + d : '') +
+        (r.status === 403 ? '. Видимо, в приложении на oauth.yandex.ru не отмечен доступ к Диску.' : ''));
     }
     toast('Яндекс Диск подключён');
     await onDiskConnected(token);
