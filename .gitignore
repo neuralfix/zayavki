@@ -5,3 +5,4 @@ telegram/
 импорт/
 *.csv
 result.json
+__pycache__/
