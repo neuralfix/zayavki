@@ -1,1 +1,7 @@
 .claude/
+
+# Данные клиентов: никогда не публиковать на GitHub
+telegram/
+импорт/
+*.csv
+result.json
