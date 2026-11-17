@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.15'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.16'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];

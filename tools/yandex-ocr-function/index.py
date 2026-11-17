@@ -7,7 +7,8 @@ ORIGINS = ('https://neuralfix.github.io', 'http://localhost:8765')
 
 
 def _cors(event):
-    origin = (event.get('headers') or {}).get('Origin') or (event.get('headers') or {}).get('origin') or ''
+    h = {k.lower(): v for k, v in (event.get('headers') or {}).items()}
+    origin = h.get('origin', '')
     return {'Access-Control-Allow-Origin': origin if origin in ORIGINS else ORIGINS[0],
             'Access-Control-Allow-Methods': 'POST, OPTIONS',
             'Access-Control-Allow-Headers': 'Content-Type, X-App-Key',
@@ -19,26 +20,43 @@ def _answer(event, code, body):
     return {'statusCode': code, 'headers': h, 'body': json.dumps(body, ensure_ascii=False)}
 
 
+def _why(key, got):
+    # Почему ключ не подошёл — без раскрытия самого ключа
+    if not key:
+        return 'в функции не задан APP_KEY'
+    if len(key) < 12:
+        return 'в функции APP_KEY короче 12 символов'
+    if not got:
+        return 'ключ не пришёл в функцию'
+    why = ('разная длина: в функции %d символов, из приложения %d' % (len(key), len(got)) if len(key) != len(got)
+           else 'длина одинаковая (%d), но отличаются буквы — проверьте большие и маленькие' % len(key))
+    if any(ord(c) > 126 for c in key):
+        why += '; в APP_KEY есть русские буквы или особые знаки'
+    return why
+
+
 def handler(event, context):
     if event.get('httpMethod') == 'OPTIONS':
         return {'statusCode': 204, 'headers': _cors(event), 'body': ''}
     headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}
-    key = os.environ.get('APP_KEY', '')
-    if len(key) < 12 or headers.get('x-app-key') != key:
-        return _answer(event, 403, {'error': 'Неверный ключ'})
     body = event.get('body') or ''
     if event.get('isBase64Encoded'):
         body = base64.b64decode(body).decode('utf-8')
     try:
-        image = json.loads(body).get('image', '')
+        data = json.loads(body) if body else {}
     except ValueError:
-        image = ''
+        data = {}
+    key = os.environ.get('APP_KEY', '').strip()
+    got = (headers.get('x-app-key') or data.get('key') or '').strip()
+    if len(key) < 12 or got != key:
+        return _answer(event, 403, {'error': 'Неверный ключ', 'why': _why(key, got)})
+    image = data.get('image', '')
     if not image or len(image) > 3_000_000:
         return _answer(event, 400, {'error': 'Нет фото или оно слишком большое'})
     req = urllib.request.Request(OCR_URL, method='POST', data=json.dumps({
         'mimeType': 'JPEG', 'languageCodes': ['ru', 'en'], 'model': 'page', 'content': image}).encode(), headers={
         'Content-Type': 'application/json', 'Authorization': 'Bearer ' + context.token['access_token'],
-        'x-folder-id': os.environ['FOLDER_ID'],
+        'x-folder-id': os.environ['FOLDER_ID'].strip(),
         'x-data-logging-enabled': 'false'})  # Яндекс не сохраняет фото для своих нужд
     try:
         with urllib.request.urlopen(req, timeout=25) as r:

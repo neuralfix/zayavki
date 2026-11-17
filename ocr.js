@@ -223,9 +223,12 @@ async function cloudOcrText(blob, conf) {
   try {
     const r = await fetch(conf.url, { method: 'POST', signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', 'X-App-Key': conf.key },
-      body: JSON.stringify({ image: await _jpegBase64(blob) }) });
+      body: JSON.stringify({ key: conf.key, image: await _jpegBase64(blob) }) });
     const j = await r.json().catch(() => ({}));
-    if (r.status === 403) throw new Error('Неверный ключ: в приложении ' + conf.key.length + ' символов. Сравните буква в букву с APP_KEY в функции — с учётом больших и маленьких букв.');
+    if (r.status === 403) {
+      throw new Error('Неверный ключ: ' + (j.why || 'в приложении ' + conf.key.length + ' символов, сравните буква в букву с APP_KEY') +
+        (/[^\x21-\x7e]/.test(conf.key) ? '. В ключе в приложении есть русские буквы или пробелы.' : '.'));
+    }
     if (!r.ok) throw new Error(j.error ? 'Яндекс: ' + j.error + (j.detail ? ' — ' + j.detail.slice(0, 120) : '') : 'Яндекс ответил ошибкой ' + r.status);
     return j.text || (j.lines || []).join('\n');
   } catch (e) {

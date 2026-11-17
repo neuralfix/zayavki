@@ -12,7 +12,21 @@ const LEGACY_DIR = 'app:/Заявки'; // старая незашифрован
 const syncChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('zayavki-sync') : null;
 
 class NetError extends Error {}
+class BusyError extends NetError {} // Диск временно занят («Resource is locked», слишком часто) — повторим
 class AuthError extends Error {}
+
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const _busy = (status) => status === 423 || status === 429 || status >= 500;
+
+// Повтор при временной занятости Диска: через 3, 10 и 30 секунд
+async function _retry(fn) {
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) {
+      if (!(e instanceof BusyError) || i >= 3) throw e;
+      await _sleep([3000, 10000, 30000][i]);
+    }
+  }
+}
 
 async function ydFetch(token, path, opts = {}) {
   let r;
@@ -29,6 +43,7 @@ async function ydFetch(token, path, opts = {}) {
 }
 
 async function ydFail(r) {
+  if (_busy(r.status)) throw new BusyError('Яндекс Диск временно занят — отправка продолжится сама');
   let msg = '';
   try { const j = await r.json(); msg = j.description || j.message || ''; } catch (e) { /* пусто */ }
   throw new Error('Яндекс Диск: ' + (msg || ('ошибка ' + r.status)));
@@ -51,6 +66,7 @@ async function ydUpload(token, path, body) {
     // Запрос к API прошёл, а загрузка файла — нет: обрыв связи или запрет браузера.
     throw new NetError('Не удалось отправить файл на Диск');
   }
+  if (_busy(u.status)) throw new BusyError('Яндекс Диск временно занят — отправка продолжится сама');
   if (!(u.ok || u.status === 201 || u.status === 202)) throw new Error('Яндекс Диск: файл не принят (' + u.status + ')');
 }
 
@@ -216,16 +232,18 @@ async function _doSync() {
   _notify({ type: 'start' });
   let sent = 0;
   try {
-    await ydMkdir(token, ROOT);
+    await _retry(() => ydMkdir(token, ROOT));
     if (needMigrate) { await _migrateToEncrypted(token); q = await _pending(); }
-    if (q.photos.length) await ydMkdir(token, PHOTOS_DIR);
+    if (q.photos.length) await _retry(() => ydMkdir(token, PHOTOS_DIR));
 
     // 1. Фото: имя файла — случайный номер, внутри — зашифрованный снимок
     for (const p of q.photos) {
       const o = await dbGet('orders', p.orderId);
       if (!o) { await dbDel('photos', p.id); continue; }
       const path = PHOTOS_DIR + '/' + p.id + '.bin';
-      await ydUpload(token, path, new Blob([await encryptBytes(p.blob)]));
+      const body = new Blob([await encryptBytes(p.blob)]);
+      await _retry(() => ydUpload(token, path, body));
+      if (q.photos.length > 20) await _sleep(250);   // много фото подряд — не торопим Диск, иначе он блокирует папку
       const fresh = await dbGet('photos', p.id);
       if (fresh) { fresh.uploaded = 1; fresh.remotePath = path; await dbPut('photos', fresh); }
       sent++;
@@ -234,7 +252,7 @@ async function _doSync() {
 
     // 2. Удалённое в приложении — в корзину Диска (там тоже только зашифрованное)
     for (const path of q.deletes) {
-      await ydDelete(token, path);
+      await _retry(() => ydDelete(token, path));
       const left = ((await getMeta('pendingDeletes')) || []).filter((x) => x !== path);
       await setMeta('pendingDeletes', left);
     }
@@ -243,7 +261,8 @@ async function _doSync() {
     if (q.dataPending || sent) {
       const dump = await buildDump();
       if (dump.orders.length || dump.expenses.length) {
-        await ydUpload(token, ROOT + 'data.bin', new Blob([await encryptBytes(JSON.stringify(dump))]));
+        const body = new Blob([await encryptBytes(JSON.stringify(dump))]);
+        await _retry(() => ydUpload(token, ROOT + 'data.bin', body));
       }
       await setMeta('syncedVersion', q.version);
     }
@@ -255,6 +274,7 @@ async function _doSync() {
     return { status: 'ok', sent };
   } catch (e) {
     if (e instanceof NetError) {
+      await setMeta('syncError', null);   // временное — не ошибка, повторим позже
       await setMeta('syncWaiting', true);
       _notify({ type: 'waiting' });
       return { status: 'waiting', error: e.message };
