@@ -1,10 +1,14 @@
 // Синхронизация с Яндекс Диском. Работает и со страницы, и из фона (service worker).
 // Всё складывается в папку приложения: «Диск / Приложения / <имя приложения>».
+// На Диск уходят только зашифрованные файлы (см. crypto.js), без имён и адресов в названиях:
+//   data.bin            — все заявки и расходы;
+//   Фото/<номер>.bin    — фото договоров и деталей.
 'use strict';
 
 const YD_API = 'https://cloud-api.yandex.net/v1/disk';
 const ROOT = 'app:/';
-const ORDERS_DIR = 'app:/Заявки';
+const PHOTOS_DIR = 'app:/Фото';
+const LEGACY_DIR = 'app:/Заявки'; // старая незашифрованная раскладка (версия 1.0)
 const syncChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('zayavki-sync') : null;
 
 class NetError extends Error {}
@@ -50,13 +54,13 @@ async function ydUpload(token, path, body) {
   if (!(u.ok || u.status === 201 || u.status === 202)) throw new Error('Яндекс Диск: файл не принят (' + u.status + ')');
 }
 
-async function ydDelete(token, path) {
-  const r = await ydFetch(token, '/resources?permanently=false&path=' + encodeURIComponent(path), { method: 'DELETE' });
+async function ydDelete(token, path, permanently) {
+  const r = await ydFetch(token, '/resources?permanently=' + (permanently ? 'true' : 'false') + '&path=' + encodeURIComponent(path), { method: 'DELETE' });
   if (r.ok || r.status === 202 || r.status === 204 || r.status === 404) return;
   await ydFail(r);
 }
 
-async function ydDownloadText(token, path) {
+async function ydDownloadBytes(token, path) {
   const r = await ydFetch(token, '/resources/download?path=' + encodeURIComponent(path));
   if (r.status === 404) return null;
   if (!r.ok) await ydFail(r);
@@ -64,7 +68,32 @@ async function ydDownloadText(token, path) {
   let d;
   try { d = await fetch(href); } catch (e) { throw new NetError('Не удалось скачать файл с Диска'); }
   if (!d.ok) throw new Error('Яндекс Диск: файл не скачан (' + d.status + ')');
-  return d.text();
+  return new Uint8Array(await d.arrayBuffer());
+}
+
+// Скачать с Диска и расшифровать фото, которого нет в телефоне (например, после переезда на новый телефон).
+async function fetchPhoto(id) {
+  const p = await dbGet('photos', id);
+  if (!p || p.blob) return p;
+  const token = await getMeta('ydToken');
+  if (!token) throw new Error('Подключите Яндекс Диск');
+  if (!p.remotePath) throw new Error('Этого фото нет на Диске');
+  const bytes = await ydDownloadBytes(token, p.remotePath);
+  if (!bytes) throw new Error('Фото не найдено на Диске');
+  let plain;
+  try { plain = await decryptBytes(bytes, null); } catch (e) { throw new Error('Фото зашифровано другим паролем'); }
+  p.blob = new Blob([plain], { type: 'image/jpeg' });
+  p.uploaded = 1;
+  await dbPut('photos', p);
+  return p;
+}
+
+// Скачать копию с Диска. Возвращает данные или null, если копии там нет.
+async function downloadDiskDump(askPassword) {
+  const bytes = await ydDownloadBytes(await getMeta('ydToken'), ROOT + 'data.bin');
+  if (!bytes) return null;
+  const plain = await decryptBytes(bytes, askPassword);
+  return JSON.parse(new TextDecoder().decode(plain));
 }
 
 // ---------- Выгрузка данных ----------
@@ -116,11 +145,6 @@ function expensesCsv(expenses) {
   return _csv(rows);
 }
 
-function orderFolderName(o) {
-  const parts = [String(o.num).padStart(4, '0'), o.name, o.address].filter(Boolean).join(' ');
-  return parts.replace(/[\\/:*?"<>|#%{}~&]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
-}
-
 // ---------- Синхронизация ----------
 
 async function syncStatus() {
@@ -131,6 +155,7 @@ async function syncStatus() {
   const syncedVersion = (await getMeta('syncedVersion')) || 0;
   return {
     connected: !!token,
+    hasKey: await hasPassword(),
     pendingPhotos,
     dataPending: dataVersion !== syncedVersion,
     pendingDeletes: ((await getMeta('pendingDeletes')) || []).length,
@@ -148,15 +173,41 @@ function syncNow() {
   return _doSync();
 }
 
+async function _pending() {
+  const photos = (await dbAll('photos')).filter((p) => !p.uploaded && p.blob);
+  const deletes = (await getMeta('pendingDeletes')) || [];
+  const version = (await getMeta('dataVersion')) || 0;
+  const dataPending = version !== ((await getMeta('syncedVersion')) || 0);
+  return { photos, deletes, version, dataPending };
+}
+
+// Переход с версии 1.0: там файлы лежали на Диске открыто, а папки назывались по имени и адресу клиента.
+// Удаляем их насовсем (не в корзину) и отправляем всё заново в зашифрованном виде.
+async function _migrateToEncrypted(token) {
+  for (const f of ['data.json', 'Заявки.csv', 'Расходы.csv']) await ydDelete(token, ROOT + f, true);
+  await ydDelete(token, LEGACY_DIR, true);
+  for (const p of await dbAll('photos')) {
+    if (p.remotePath && !p.remotePath.startsWith(PHOTOS_DIR + '/')) {
+      p.uploaded = 0; p.remotePath = null; await dbPut('photos', p);
+    }
+  }
+  for (const o of await dbAll('orders')) {
+    if (o.remoteFolder) { delete o.remoteFolder; await dbPut('orders', o); }
+  }
+  await setMeta('pendingDeletes', []);
+  await setMeta('diskLayout', 2);
+  await markDirty();
+}
+
 async function _doSync() {
   const token = await getMeta('ydToken');
   if (!token) return { status: 'off' };
+  // Без пароля ничего не отправляем: на Диск попадает только зашифрованное.
+  if (!(await hasPassword())) return { status: 'nokey' };
 
-  const photos = (await dbAll('photos')).filter((p) => !p.uploaded && p.blob);
-  const deletes = (await getMeta('pendingDeletes')) || [];
-  const versionAtStart = (await getMeta('dataVersion')) || 0;
-  const dataPending = versionAtStart !== ((await getMeta('syncedVersion')) || 0);
-  if (!photos.length && !deletes.length && !dataPending) {
+  const needMigrate = (await getMeta('diskLayout')) !== 2;
+  let q = await _pending();
+  if (!needMigrate && !q.photos.length && !q.deletes.length && !q.dataPending) {
     await setMeta('syncWaiting', false);
     return { status: 'nothing' };
   }
@@ -165,42 +216,35 @@ async function _doSync() {
   let sent = 0;
   try {
     await ydMkdir(token, ROOT);
-    await ydMkdir(token, ORDERS_DIR);
+    if (needMigrate) { await _migrateToEncrypted(token); q = await _pending(); }
+    if (q.photos.length) await ydMkdir(token, PHOTOS_DIR);
 
-    // 1. Фото — по папкам заявок
-    const madeDirs = new Set();
-    for (const p of photos) {
+    // 1. Фото: имя файла — случайный номер, внутри — зашифрованный снимок
+    for (const p of q.photos) {
       const o = await dbGet('orders', p.orderId);
       if (!o) { await dbDel('photos', p.id); continue; }
-      if (!o.remoteFolder) {
-        o.remoteFolder = orderFolderName(o);
-        await dbPut('orders', o);
-      }
-      const dir = ORDERS_DIR + '/' + o.remoteFolder;
-      if (!madeDirs.has(dir)) { await ydMkdir(token, dir); madeDirs.add(dir); }
-      const name = (p.kind === 'contract' ? 'договор-' : 'фото-') + p.id.slice(0, 8) + '.jpg';
-      const path = dir + '/' + name;
-      await ydUpload(token, path, p.blob);
+      const path = PHOTOS_DIR + '/' + p.id + '.bin';
+      await ydUpload(token, path, new Blob([await encryptBytes(p.blob)]));
       const fresh = await dbGet('photos', p.id);
       if (fresh) { fresh.uploaded = 1; fresh.remotePath = path; await dbPut('photos', fresh); }
       sent++;
-      _notify({ type: 'progress', sent, total: photos.length });
+      _notify({ type: 'progress', sent, total: q.photos.length });
     }
 
-    // 2. Удалённое в приложении — в корзину Диска
-    for (const path of deletes) {
+    // 2. Удалённое в приложении — в корзину Диска (там тоже только зашифрованное)
+    for (const path of q.deletes) {
       await ydDelete(token, path);
       const left = ((await getMeta('pendingDeletes')) || []).filter((x) => x !== path);
       await setMeta('pendingDeletes', left);
     }
 
-    // 3. Сами данные + таблицы для Excel
-    if (dataPending || sent) {
+    // 3. Сами данные. Пустую копию не отправляем, чтобы новый телефон не затёр копию на Диске.
+    if (q.dataPending || sent) {
       const dump = await buildDump();
-      await ydUpload(token, ROOT + 'data.json', new Blob([JSON.stringify(dump)], { type: 'application/json' }));
-      await ydUpload(token, ROOT + 'Заявки.csv', new Blob([ordersCsv(dump.orders)], { type: 'text/csv' }));
-      await ydUpload(token, ROOT + 'Расходы.csv', new Blob([expensesCsv(dump.expenses)], { type: 'text/csv' }));
-      await setMeta('syncedVersion', versionAtStart);
+      if (dump.orders.length || dump.expenses.length) {
+        await ydUpload(token, ROOT + 'data.bin', new Blob([await encryptBytes(JSON.stringify(dump))]));
+      }
+      await setMeta('syncedVersion', q.version);
     }
 
     await setMeta('lastSync', Date.now());

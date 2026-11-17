@@ -81,6 +81,7 @@ async function updateSyncBadge() {
   const s = await syncStatus();
   b.className = 'sync';
   if (!s.connected) { b.textContent = 'Диск не подключён'; b.classList.add('warn'); return; }
+  if (!s.hasKey) { b.textContent = '🔒 Нужен пароль'; b.classList.add('warn'); return; }
   const pending = s.pendingPhotos + (s.dataPending ? 1 : 0) + s.pendingDeletes;
   if (s.error) { b.textContent = '⚠ Ошибка Диска'; b.classList.add('err'); return; }
   if (pending) {
@@ -266,9 +267,11 @@ async function renderOrder(id) {
     await dbPut('orders', o); changed(); renderOrder(id);
   };
   $('[data-a=del]').onclick = async () => {
-    if (!confirm('Удалить заявку №' + o.num + ' вместе с фото? На Диске папка уйдёт в корзину.')) return;
-    for (const p of await dbByIndex('photos', 'orderId', o.id)) await dbDel('photos', p.id);
-    if (o.remoteFolder) await addPendingDelete('app:/Заявки/' + o.remoteFolder);
+    if (!confirm('Удалить заявку №' + o.num + ' вместе с фото? На Диске фото уйдут в корзину.')) return;
+    for (const p of await dbByIndex('photos', 'orderId', o.id)) {
+      if (p.remotePath) await addPendingDelete(p.remotePath);
+      await dbDel('photos', p.id);
+    }
     await dbDel('orders', o.id);
     toast('Заявка удалена'); changed(); go('#/orders', true);
   };
@@ -291,7 +294,7 @@ async function compressImage(file, max, q) {
 async function photoWidget(o, box) {
   const photos = (await dbByIndex('photos', 'orderId', o.id)).sort((a, b) => (a.kind === b.kind ? a.createdAt - b.createdAt : a.kind === 'contract' ? -1 : 1));
   const tiles = photos.map((p) => {
-    if (!p.blob) return `<div class="ph remote">на Диске</div>`;
+    if (!p.blob) return `<button type="button" class="ph remote" data-remote="${p.id}">на Диске<br>открыть</button>`;
     const u = URL.createObjectURL(p.blob); photoUrls.push(u);
     return `<button type="button" class="ph" data-id="${p.id}"><img src="${u}" alt="">
       ${p.kind === 'contract' ? '<span class="tag">договор</span>' : ''}${p.uploaded ? '' : '<span class="up">↑</span>'}</button>`;
@@ -316,6 +319,10 @@ async function photoWidget(o, box) {
     changed();
   });
   $$('.ph[data-id]', box).forEach((b) => b.onclick = () => openViewer(b.dataset.id, o, box));
+  $$('.ph[data-remote]', box).forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Загружаю…';
+    try { await fetchPhoto(b.dataset.remote); await photoWidget(o, box); } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = 'на Диске<br>открыть'; }
+  });
 }
 
 async function openViewer(photoId, o, box) {
@@ -530,8 +537,52 @@ async function renderReport() {
   $('#next').onclick = () => { state.month = shiftMonth(key, 1); renderReport(); };
 }
 
-// ================= ДИСК И КОПИИ =================
+// ================= ПАРОЛЬ, ДИСК И КОПИИ =================
 const redirectUri = () => location.origin + location.pathname;
+
+// Окно ввода пароля. Возвращает пароль или null, если нажали «Отмена».
+function passwordDialog({ title, text, repeat }) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.className = 'pw';
+    d.innerHTML = `<form>
+      <h3>${esc(title)}</h3>
+      ${text ? `<p class="note">${esc(text)}</p>` : ''}
+      <input class="input" type="password" name="p1" placeholder="Пароль" autocomplete="${repeat ? 'new-password' : 'current-password'}">
+      ${repeat ? '<input class="input" type="password" name="p2" placeholder="Ещё раз тот же пароль" autocomplete="new-password" style="margin-top:8px">' : ''}
+      <label class="small muted show"><input type="checkbox"> показать пароль</label>
+      <p class="small neg" data-err hidden></p>
+      <div class="btns"><button type="button" class="btn sec" data-a="no">Отмена</button><button class="btn">Готово</button></div>
+    </form>`;
+    document.body.appendChild(d);
+    const f = $('form', d);
+    const err = $('[data-err]', d);
+    const done = (v) => { d.close(); d.remove(); resolve(v); };
+    $('.show input', d).onchange = (e) => $$('input.input', d).forEach((i) => { i.type = e.target.checked ? 'text' : 'password'; });
+    $('[data-a=no]', d).onclick = () => done(null);
+    d.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const p1 = f.p1.value;
+      if (repeat && p1.length < 8) { err.textContent = 'Нужно не меньше 8 символов'; err.hidden = false; return; }
+      if (repeat && p1 !== f.p2.value) { err.textContent = 'Пароли не совпадают'; err.hidden = false; return; }
+      if (!p1) return;
+      done(p1);
+    };
+    d.showModal();
+    f.p1.focus();
+  });
+}
+
+const askCopyPassword = (attempt) => passwordDialog({
+  title: 'Пароль от копии',
+  text: attempt ? 'Пароль не подошёл. Попробуйте ещё раз.' : 'Копия зашифрована. Введите пароль, который задавали в приложении.',
+});
+
+const syncMessage = (r) => ({
+  ok: 'Готово, отправлено', nothing: 'Всё уже на Диске', waiting: 'Нет связи — отправлю позже',
+  busy: 'Уже отправляется', nokey: 'Сначала задайте пароль', off: 'Диск не подключён',
+}[r.status] || r.error || 'Ошибка');
 
 async function renderSettings() {
   setTitle('Диск и копии');
@@ -540,20 +591,34 @@ async function renderSettings() {
   let est = '';
   try { const e = await navigator.storage.estimate(); est = Math.round(e.usage / 1048576) + ' МБ'; } catch (e) { /* нет данных */ }
 
+  const lock = s.hasKey ? `
+    <p class="small" style="margin-top:0">🔒 <b>Пароль задан.</b> Всё, что уходит на Яндекс Диск и в файл копии, зашифровано.
+      Без пароля это не откроет ни Яндекс, ни тот, кто войдёт в ваш аккаунт.</p>
+    <button class="btn sec" id="checkPw">Проверить, помню ли пароль</button>`
+    : `
+    <p class="small" style="margin-top:0">Задайте пароль. Им шифруется всё, что уходит с телефона: копия на Яндекс Диске и файл копии.
+      Без пароля Диск ничего не получает.</p>
+    <p class="small"><b>Запишите пароль</b> и храните отдельно от телефона. Если его забыть, копию на Диске и в файлах открыть будет
+      нельзя никак. Данные в самом телефоне останутся.</p>
+    <p class="note">Переезжаете на новый телефон? Задайте тот же пароль, что и на старом.</p>
+    <button class="btn" id="setPw">Задать пароль</button>`;
+
   const disk = s.connected ? `
     <div class="stat">
-      <span>Состояние</span><b>${s.error ? '<span class="neg">ошибка</span>' : 'подключён'}</b>
+      <span>Состояние</span><b>${s.error ? '<span class="neg">ошибка</span>' : !s.hasKey ? '<span class="neg">нужен пароль</span>' : 'подключён'}</b>
       <span>Последняя отправка</span><span>${s.lastSync ? esc(fmtDate(s.lastSync)) : '—'}</span>
       <span>Ждут отправки</span><span>${s.pendingPhotos} фото${s.dataPending ? ' + данные' : ''}</span>
     </div>
     ${s.error ? `<p class="small neg">${esc(s.error)}</p>` : ''}
+    ${!s.hasKey ? '<p class="small neg">Задайте пароль выше — без него на Диск ничего не отправляется.</p>' : ''}
     ${s.waiting && !s.error ? '<p class="small muted">Нет связи — отправлю, когда появится интернет.</p>' : ''}
     <button class="btn" id="syncNow" style="margin-top:12px">Отправить сейчас</button>
     <button class="btn sec" id="fromDisk">Восстановить с Диска</button>
     <button class="btn danger" id="disconnect">Отключить Диск</button>
-    <p class="note">Всё лежит на Диске в папке «Приложения». Там же таблицы «Заявки.csv» и «Расходы.csv» — открываются в Excel.</p>`
-    : `
-    <p class="small">Подключается один раз. После этого заявки, отчёты и фото сами уходят на ваш Яндекс Диск, когда есть интернет.</p>
+    <p class="note">На Диске в папке «Приложения» лежат только зашифрованные файлы <b>data.bin</b> и папка <b>Фото</b>.
+      Открыть их можно только здесь, с вашим паролем. Фото, которых нет в телефоне, открываются кнопкой «на Диске» в заявке.</p>`
+    : !s.hasKey ? '<p class="small">Сначала задайте пароль выше, потом здесь появится подключение.</p>' : `
+    <p class="small">Подключается один раз. После этого заявки и фото сами уходят на ваш Яндекс Диск, когда есть интернет. Уходят в зашифрованном виде.</p>
     <ol class="steps">
       <li>Откройте <a href="https://oauth.yandex.ru/client/new" target="_blank" rel="noopener">oauth.yandex.ru/client/new</a> и войдите в свой Яндекс.</li>
       <li>Название: <b>Мои заявки</b>. Платформа: <b>Веб-сервисы</b>.</li>
@@ -565,16 +630,36 @@ async function renderSettings() {
     <button class="btn" id="connect">Подключить Яндекс Диск</button>`;
 
   view.innerHTML = `
+    <div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
     <div class="card"><h2>Яндекс Диск</h2>${disk}</div>
     <div class="card"><h2>Резервная копия без интернета</h2>
-      <p class="note" style="margin-top:0">Файл со всеми заявками и расходами (без фото). Можно отправить себе в Telegram.</p>
+      <p class="note" style="margin-top:0">Файл со всеми заявками и расходами (без фото), зашифрован вашим паролем.
+        Можно отправить себе в Telegram: без пароля его никто не прочитает.</p>
       <button class="btn sec" id="share">Отправить копию…</button>
       <button class="btn sec" id="download">Скачать копию файлом</button>
-      <button class="btn sec" id="csv">Таблица для Excel</button>
-      <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".json,application/json" hidden></label>
+      <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".txt,.json,text/plain,application/json" hidden></label>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.0</p>`;
+    <div class="card"><h2>Таблица для Excel</h2>
+      <p class="note" style="margin-top:0"><b class="neg">Не зашифрована.</b> Сохраняется только в «Загрузки» этого телефона.
+        Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
+      <button class="btn sec" id="csv">Скачать таблицу заявок</button>
+    </div>
+    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.1</p>`;
 
+  const sp = $('#setPw'); if (sp) sp.onclick = async () => {
+    const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
+    if (!pw) return;
+    toast('Сохраняю пароль…');
+    await setPassword(pw);
+    toast('Пароль задан');
+    updateSyncBadge(); renderSettings(); requestSync();
+  };
+  const cp = $('#checkPw'); if (cp) cp.onclick = async () => {
+    const pw = await passwordDialog({ title: 'Проверка пароля', text: 'Введите пароль, который задавали.' });
+    if (!pw) return;
+    toast('Проверяю…');
+    toast(await checkPassword(pw) ? '✓ Пароль верный' : '✗ Не тот пароль');
+  };
   const ru = $('#ru'); if (ru) ru.onclick = () => navigator.clipboard?.writeText(redirectUri()).then(() => toast('Адрес скопирован'));
   const c = $('#connect'); if (c) c.onclick = async () => {
     const id = $('#cid').value.trim();
@@ -585,16 +670,16 @@ async function renderSettings() {
   const sn = $('#syncNow'); if (sn) sn.onclick = async () => {
     sn.disabled = true; sn.textContent = 'Отправляю…';
     await setMeta('syncError', null);
-    const r = await syncNow();
-    toast(r.status === 'ok' ? 'Готово, отправлено' : r.status === 'nothing' ? 'Всё уже на Диске' : r.status === 'waiting' ? 'Нет связи — отправлю позже' : r.status === 'busy' ? 'Уже отправляется' : (r.error || 'Ошибка'));
+    toast(syncMessage(await syncNow()));
     updateSyncBadge(); renderSettings();
   };
   const fd = $('#fromDisk'); if (fd) fd.onclick = async () => {
     if (!confirm('Заменить данные в телефоне копией с Диска? Несохранённые на Диск изменения пропадут.')) return;
     try {
-      const txt = await ydDownloadText(await getMeta('ydToken'), 'app:/data.json');
-      if (!txt) { toast('На Диске ещё нет копии'); return; }
-      await restoreDump(JSON.parse(txt), true);
+      const d = await downloadDiskDump(askCopyPassword);
+      if (!d) { toast('На Диске ещё нет копии'); return; }
+      await restoreDump(d, true);
+      await setMeta('diskLayout', 2);
       toast('Восстановлено с Диска'); go('#/orders');
     } catch (e) { toast(e.message); }
   };
@@ -605,28 +690,41 @@ async function renderSettings() {
   };
 
   const dumpFile = async () => {
-    const d = await buildDump();
-    return new File([JSON.stringify(d, null, 1)], 'заявки-копия-' + toDateInput(Date.now()) + '.json', { type: 'application/json' });
+    if (!(await hasPassword())) { toast('Сначала задайте пароль'); return null; }
+    const bytes = await encryptBytes(JSON.stringify(await buildDump()));
+    const text = 'Мои заявки: зашифрованная копия. Открывается только в приложении с паролем.\n' + toBase64(bytes) + '\n';
+    return new File([text], 'заявки-копия-' + toDateInput(Date.now()) + '.txt', { type: 'text/plain' });
   };
   const saveFile = (file) => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   };
   $('#share').onclick = async () => {
-    const f = await dumpFile();
+    const f = await dumpFile(); if (!f) return;
     if (navigator.canShare && navigator.canShare({ files: [f] })) {
       try { await navigator.share({ files: [f], title: 'Копия заявок' }); } catch (e) { /* отменено */ }
     } else { saveFile(f); toast('Отправка недоступна — файл скачан'); }
   };
-  $('#download').onclick = async () => saveFile(await dumpFile());
+  $('#download').onclick = async () => { const f = await dumpFile(); if (f) saveFile(f); };
   $('#csv').onclick = async () => {
     const d = await buildDump();
     saveFile(new File([ordersCsv(d.orders)], 'заявки-' + toDateInput(Date.now()) + '.csv', { type: 'text/csv' }));
   };
   $('#restore').onchange = async (e) => {
-    const f = e.target.files[0]; if (!f) return;
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     if (!confirm('Заменить все данные в телефоне данными из файла?')) return;
-    try { await restoreDump(JSON.parse(await f.text()), false); toast('Восстановлено из файла'); requestSync(); go('#/orders'); } catch (err) { toast(err.message); }
+    try {
+      const txt = await f.text();
+      let d;
+      if (txt.trim().startsWith('{')) d = JSON.parse(txt); // старая незашифрованная копия (версия 1.0)
+      else {
+        const b64 = txt.split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9+/=]+$/.test(l)).join('');
+        if (!b64) throw new Error('Это не файл копии заявок');
+        d = JSON.parse(new TextDecoder().decode(await decryptBytes(fromBase64(b64), askCopyPassword)));
+      }
+      await restoreDump(d, false);
+      toast('Восстановлено из файла'); requestSync(); go('#/orders');
+    } catch (err) { toast(err.message); }
   };
 }
 
@@ -639,9 +737,19 @@ async function handleOAuthReturn() {
   const p = new URLSearchParams(location.hash.slice(1));
   await setMeta('ydToken', p.get('access_token'));
   await setMeta('syncError', null);
-  await markDirty(); // при первом подключении отправить всё
   history.replaceState(null, '', location.pathname + '#/settings');
   toast('Яндекс Диск подключён');
+  const hasLocal = (await dbAll('orders')).length + (await dbAll('expenses')).length > 0;
+  if (hasLocal) { await markDirty(); return; } // при первом подключении отправить всё
+  // Телефон пустой — возможно, это новый телефон, а копия уже есть на Диске.
+  try {
+    const d = await downloadDiskDump(askCopyPassword);
+    if (d && confirm('На Диске есть копия: заявок ' + d.orders.length + '. Загрузить её в телефон?')) {
+      await restoreDump(d, true);
+      await setMeta('diskLayout', 2);
+      toast('Восстановлено с Диска');
+    }
+  } catch (e) { toast(e.message); }
 }
 
 async function start() {

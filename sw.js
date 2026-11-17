@@ -1,10 +1,10 @@
 // Фоновая часть: держит приложение в телефоне для работы без связи
 // и отправляет данные на Диск, когда появляется интернет (даже если приложение закрыто).
 'use strict';
-importScripts('db.js', 'sync.js');
+importScripts('db.js', 'crypto.js', 'sync.js');
 
-const CACHE = 'zayavki-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'sync.js', 'manifest.webmanifest',
+const CACHE = 'zayavki-v2';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 
 self.addEventListener('install', (e) => {

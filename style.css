@@ -196,6 +196,17 @@ textarea.input { min-height: 72px; resize: vertical; }
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* Окно пароля */
+dialog.pw {
+  border: 0; border-radius: var(--radius); padding: 18px 16px 16px; width: min(92vw, 420px);
+  background: var(--card); color: var(--text); box-shadow: 0 12px 40px rgba(0,0,0,.35);
+}
+dialog.pw::backdrop { background: rgba(0,0,0,.55); }
+dialog.pw h3 { margin: 0 0 8px; font-size: 18px; }
+dialog.pw .show { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; }
+dialog.pw .btns { margin-top: 14px; }
+.ph.remote { cursor: pointer; }
+
 .note { font-size: 14px; color: var(--muted); }
 .steps { padding-left: 20px; margin: 8px 0; font-size: 15px; }
 .steps li { margin-bottom: 6px; }
