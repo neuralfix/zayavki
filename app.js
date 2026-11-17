@@ -179,9 +179,10 @@ async function renderOrderForm(id) {
   const v = o || {};
   view.innerHTML = `
     <form id="f" autocomplete="off">
-      <div class="field"><label>Телефон</label><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}"></div>
+      <div class="field"><label>Телефон</label><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
+        <div class="client-hint" id="client" hidden></div></div>
       <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
-      <div class="field"><label>Адрес</label><input class="input" name="address" value="${esc(v.address)}"></div>
+      <div class="field"><label>Адрес</label><input class="input" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
       <div class="field"><label>Техника</label>
         <div class="chips" id="dev">${DEVICES.map((d) => `<button type="button" class="chip ${v.device === d ? 'on' : ''}" data-v="${d}">${d}</button>`).join('')}</div>
       </div>
@@ -196,7 +197,29 @@ async function renderOrderForm(id) {
     device = device === c.dataset.v ? '' : c.dataset.v;
     $$('#dev .chip').forEach((x) => x.classList.toggle('on', x.dataset.v === device));
   });
-  if (!o) $('[name=phone]').focus();
+  // Подсказки адреса: свои прошлые адреса + справочник улиц
+  attachAddressSuggest($('[name=address]'), async () => (await dbAll('orders'))
+    .filter((x) => x.address && x.id !== v.id).sort((a, b) => b.createdAt - a.createdAt).map((x) => x.address));
+
+  // Клиент уже был — предложить подставить имя и адрес
+  const phoneIn = $('[name=phone]'); const hint = $('#client');
+  phoneIn.addEventListener('input', async () => {
+    const c = await findClientByPhone(phoneIn.value, v.id);
+    if (!c) { hint.hidden = true; return; }
+    const l = c.last;
+    hint.innerHTML = `<div><b>Этот клиент уже обращался</b>${c.count > 1 ? ' (заявок: ' + c.count + ')' : ''}:
+      ${esc(l.name || 'без имени')}${l.address ? ', ' + esc(l.address) : ''}
+      <span class="muted">· №${l.num}, ${esc(fmtDate(l.createdAt, false))}${l.device ? ', ' + esc(l.device.toLowerCase()) : ''}</span></div>
+      <button type="button" class="link">Подставить имя и адрес</button>`;
+    hint.hidden = false;
+    $('button', hint).onclick = () => {
+      if (l.name) $('[name=name]').value = l.name;
+      if (l.address) $('[name=address]').value = l.address;
+      hint.hidden = true;
+    };
+  });
+
+  if (!o) phoneIn.focus();
   $('#f').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -649,7 +672,7 @@ async function renderSettings() {
         Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
       <button class="btn sec" id="csv">Скачать таблицу заявок</button>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.4</p>`;
+    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.5<br>Справочник улиц: © участники OpenStreetMap (ODbL)</p>`;
 
   const sp = $('#setPw'); if (sp) sp.onclick = async () => {
     const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
