@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.13'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.14'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -993,9 +993,10 @@ async function renderSettings() {
       <p class="note" style="margin-top:0">Старые заявки из канала <b>добавляются</b> к текущим, ничего не стирается.
         Повторный импорт того же файла не создаёт дублей.</p>
       <label class="btn sec">1. Добавить заявки из файла<input type="file" id="tgImport" accept=".json,application/json" hidden></label>
-      ${tgLeft ? `<p class="small" style="margin:12px 0 6px">Ждут фото: <b>${tgLeft}</b>. Откройте папку «фото» из импорта,
-        выделите все снимки и нажмите «Выбрать». Лишние файлы приложение пропустит само.</p>
-      <label class="btn sec">2. Добавить фото к заявкам<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
+      ${tgLeft ? `<p class="small" style="margin:12px 0 6px">Ждут фото: <b>${tgLeft}</b>. Выберите архив <b>фото.zip</b> из папки импорта —
+        приложение само разложит снимки по заявкам. Лучше по Wi-Fi и не закрывать приложение, пока идёт.</p>
+      <label class="btn sec"><span>2. Добавить фото из архива</span><input type="file" id="tgZip" accept=".zip,application/zip,application/x-zip-compressed" hidden></label>
+      <label class="link small" style="display:block;margin-top:8px">или выбрать снимки по одному<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
       <p class="note">После импорта удалите файл и папку с фото из телефона: они не зашифрованы.</p>
     </div>
     <div class="card"><h2>Считывание шильдиков</h2>
@@ -1220,33 +1221,79 @@ async function renderSettings() {
     } catch (err) { toast(err.message); }
   };
 
-  const tp = $('#tgPhotos'); if (tp) tp.onchange = async (e) => {
-    const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+  // items: [{ name, blob() }] — из архива или выбранные по одному
+  const addTgPhotos = async (items, btn) => {
     const map = (await getMeta('tgPhotoMap')) || {};
-    const todo = files.filter((f) => map[f.name]);
-    if (!todo.length) { toast('Среди выбранных нет фото из импорта'); return; }
-    tp.disabled = true;
+    const todo = items.filter((f) => map[f.name]);
+    if (!todo.length) { toast('Здесь нет фото из импорта (или они уже добавлены)', 4000); return; }
+    const label = btn.querySelector('span') || btn; const was = label.textContent;
+    btn.classList.add('busy');
+    let lock = null; try { lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ }
     let done = 0;
-    for (const f of todo) {
-      let blob = null;
-      for (const oid of [].concat(map[f.name])) {
-        const o = await dbGet('orders', oid);
-        if (!o) continue;
-        blob = blob || await compressImage(f, 1600, 0.75);
-        await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram' });
+    try {
+      for (const f of todo) {
+        let blob = null;
+        for (const oid of [].concat(map[f.name])) {
+          const o = await dbGet('orders', oid);
+          if (!o) continue;
+          blob = blob || await compressImage(await f.blob(), 1600, 0.75);
+          await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram' });
+        }
+        delete map[f.name];
+        done++;
+        label.textContent = 'Добавляю фото: ' + done + ' из ' + todo.length + '…';
+        if (done % 10 === 0) await setMeta('tgPhotoMap', map);  // прервётся — продолжит с этого места
       }
-      delete map[f.name];
-      done++;
-      if (done % 10 === 0 || done === todo.length) {
-        await setMeta('tgPhotoMap', map);
-        toast('Фото: ' + done + ' из ' + todo.length);
-      }
+    } finally {
+      await setMeta('tgPhotoMap', map);
+      try { lock && lock.release(); } catch (e) { /* пусто */ }
+      btn.classList.remove('busy'); label.textContent = was;
     }
-    await setMeta('tgPhotoMap', map);
     await changed();
-    toast('Фото добавлены: ' + done + (Object.keys(map).length ? ', ещё ждут: ' + Object.keys(map).length : ''));
+    toast('Фото добавлены: ' + done + (Object.keys(map).length ? ', ещё ждут: ' + Object.keys(map).length : ''), 5000);
     renderSettings();
   };
+  const tz = $('#tgZip'); if (tz) tz.onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    try { await addTgPhotos(await readZipEntries(f), tz.closest('label')); } catch (err) { toast(err.message, 5000); }
+  };
+  const tp = $('#tgPhotos'); if (tp) tp.onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = ''; if (!files.length) return;
+    await addTgPhotos(files.map((f) => ({ name: f.name, blob: async () => f })), tp.closest('label'));
+  };
+}
+
+// Чтение zip-архива без распаковки целиком: каждый файл берётся кусочком прямо из архива (память телефона не забивается)
+async function readZipEntries(file) {
+  const tailLen = Math.min(file.size, 65557);
+  const tail = new DataView(await file.slice(file.size - tailLen).arrayBuffer());
+  let eocd = -1;
+  for (let i = tailLen - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Это не zip-архив');
+  const count = tail.getUint16(eocd + 10, true);
+  const cdSize = tail.getUint32(eocd + 12, true); const cdOff = tail.getUint32(eocd + 16, true);
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer());
+  const dec = new TextDecoder();
+  const out = [];
+  for (let p = 0, n = 0; n < count && p + 46 <= cd.byteLength; n++) {
+    if (cd.getUint32(p, true) !== 0x02014b50) throw new Error('Архив повреждён');
+    const method = cd.getUint16(p + 10, true); const csize = cd.getUint32(p + 20, true);
+    const nlen = cd.getUint16(p + 28, true); const xlen = cd.getUint16(p + 30, true); const clen = cd.getUint16(p + 32, true);
+    const loc = cd.getUint32(p + 42, true);
+    const path = dec.decode(new Uint8Array(cd.buffer, cd.byteOffset + p + 46, nlen));
+    p += 46 + nlen + xlen + clen;
+    const name = path.split('/').pop();
+    if (!name || !/\.(jpe?g|png|webp)$/i.test(name)) continue;
+    out.push({ name, blob: async () => {
+      const h = new DataView(await file.slice(loc, loc + 30).arrayBuffer());
+      const start = loc + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+      const raw = file.slice(start, start + csize, 'image/jpeg');
+      if (method === 0) return raw;                                   // без сжатия — как есть
+      if (method === 8) return new Response(raw.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+      throw new Error('Неподдерживаемый архив');
+    } });
+  }
+  return out;
 }
 
 // ================= ЗАПУСК =================

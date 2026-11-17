@@ -285,3 +285,4 @@ dialog.pw .btns { margin-top: 14px; }
 .steps { padding-left: 20px; margin: 8px 0; font-size: 15px; }
 .steps li { margin-bottom: 6px; }
 code.copy { display: block; padding: 10px; border-radius: 8px; background: var(--accent-2); word-break: break-all; font-size: 13px; margin: 4px 0; }
+.btn.busy { pointer-events: none; opacity: .75; }
