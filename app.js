@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.11'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.12'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -605,7 +605,8 @@ async function openViewer(photoId, o, box) {
   const p = await dbGet('photos', photoId); if (!p || !p.blob) return;
   const u = URL.createObjectURL(p.blob);
   const v = $('#viewer');
-  v.innerHTML = `<img src="${u}" alt=""><div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button><button data-a="x">Закрыть</button></div>`;
+  v.innerHTML = `<img src="${u}" alt=""><div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
+    <button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>`;
   v.hidden = false;
   const close = () => { v.hidden = true; v.innerHTML = ''; URL.revokeObjectURL(u); };
   $('[data-a=x]', v).onclick = close;
@@ -615,6 +616,40 @@ async function openViewer(photoId, o, box) {
     await dbDel('photos', p.id);
     close(); await photoWidget(o, box); changed();
   };
+  // Модель с шильдика — распознаётся в телефоне, вы выбираете и проверяете
+  $('[data-a=ocr]', v).onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    const reset = () => { btn.textContent = 'Считать модель'; btn.disabled = false; };
+    try {
+      const r = await readPlate(p.blob, (t) => { btn.textContent = t; });
+      reset();
+      const fresh = await dbGet('orders', o.id); if (!fresh) return;
+      const res = await plateDialog(r, fresh.model || '');
+      if (!res || !res.model) return;
+      Object.assign(fresh, { model: res.model, updatedAt: Date.now() });
+      await dbPut('orders', fresh);
+      o.model = res.model;
+      toast('Модель записана: ' + res.model); changed();
+      close();
+      if (location.hash.startsWith('#/order/')) route();
+    } catch (err) { console.error(err); toast(err.message || 'Не получилось прочитать', 4000); reset(); }
+  };
+}
+
+function plateDialog(r, cur) {
+  const guess = [r.brand, r.models[0]].filter(Boolean).join(' ');
+  return formDialog('Модель с шильдика', `
+    ${r.models.length ? `<p class="note" style="margin-top:0">Нажмите подходящую и сверьте буквы и цифры с фото:</p>
+      <div class="chips" style="margin-bottom:10px">${r.models.map((m) => `<button type="button" class="chip" data-m="${esc(m)}" data-k="model">${esc(m)}</button>`).join('')}</div>`
+      : '<p class="note" style="margin-top:0">Модель не нашлась. Выберите строку из текста ниже или впишите вручную. Лучше всего читается снимок прямо, без блика.</p>'}
+    <div class="field"><label>Марка / модель</label><input class="input" name="model" value="${esc(guess || cur)}" autocapitalize="characters"></div>
+    ${cur && cur !== guess ? `<p class="note" style="margin-top:-4px">Сейчас записано: ${esc(cur)}</p>` : ''}
+    ${r.lines.length ? `<details class="tg"><summary>Весь текст с шильдика</summary>
+      <div class="chips" style="margin-top:8px">${r.lines.map((l) => `<button type="button" class="chip" data-m="${esc(l)}">${esc(l)}</button>`).join('')}</div></details>` : ''}`,
+  (d) => $$('[data-m]', d).forEach((b) => b.onclick = () => {
+    const m = b.dataset.m;
+    $('[name=model]', d).value = b.dataset.k === 'model' && r.brand ? r.brand + ' ' + m : m;
+  }));
 }
 
 // ---------- Закрытие заявки ----------
@@ -1276,6 +1311,7 @@ async function start() {
   setInterval(tickClock, 10 * 1000);
   $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/today'));
   try { await tidyPhones(); } catch (e) { console.warn('phones', e); }
+  setTimeout(prefetchOcr, 20 * 1000); // распознавание шильдика — скачать заранее, чтобы работало без сети
   checkUpdateBanner(true);
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);
