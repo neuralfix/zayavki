@@ -49,7 +49,7 @@ const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фи�
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
 const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.16'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.17'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -601,27 +601,66 @@ async function photoWidget(o, box) {
   });
 }
 
+// Просмотр фото заявки: листать пальцем влево-вправо (или стрелками), счётчик «3 / 7»
 async function openViewer(photoId, o, box) {
-  const p = await dbGet('photos', photoId); if (!p || !p.blob) return;
-  const u = URL.createObjectURL(p.blob);
+  const list = (await dbByIndex('photos', 'orderId', o.id)).filter((x) => x.blob).sort((a, b) => a.createdAt - b.createdAt);
+  if (!list.length) return;
+  let i = Math.max(0, list.findIndex((x) => x.id === photoId));
+  let u = null;
   const v = $('#viewer');
-  v.innerHTML = `<img src="${u}" alt=""><div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
+  v.innerHTML = `<div class="stage"><img alt=""><span class="cnt"></span>
+      <button class="nav prev" data-a="prev" aria-label="Предыдущее фото">‹</button><button class="nav next" data-a="next" aria-label="Следующее фото">›</button></div>
+    <div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
     <button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>`;
   v.hidden = false;
-  const close = () => { v.hidden = true; v.innerHTML = ''; URL.revokeObjectURL(u); };
+  const img = $('img', v);
+  const show = () => {
+    if (u) URL.revokeObjectURL(u);
+    u = URL.createObjectURL(list[i].blob); img.src = u;
+    $('.cnt', v).textContent = list.length > 1 ? (i + 1) + ' / ' + list.length : '';
+    $$('.nav', v).forEach((b) => { b.hidden = list.length < 2; });
+  };
+  const step = (d) => { if (list.length > 1) { i = (i + d + list.length) % list.length; show(); } };
+  show();
+  // Свайп: палец ведёт фото за собой, отпустили дальше 60 px — следующее
+  let sx = null, sy = 0, dx = 0;
+  const stage = $('.stage', v);
+  stage.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { sx = null; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; img.style.transition = 'none';
+  }, { passive: true });
+  stage.addEventListener('touchmove', (e) => {
+    if (sx === null || e.touches.length !== 1) return;
+    dx = e.touches[0].clientX - sx;
+    if (Math.abs(dx) > Math.abs(e.touches[0].clientY - sy)) img.style.transform = 'translateX(' + dx + 'px)';
+  }, { passive: true });
+  stage.addEventListener('touchend', () => {
+    if (sx === null) return;
+    img.style.transition = ''; img.style.transform = '';
+    if (Math.abs(dx) > 60) step(dx < 0 ? 1 : -1);
+    sx = null;
+  });
+  const onKey = (e) => { if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  $('[data-a=prev]', v).onclick = () => step(-1);
+  $('[data-a=next]', v).onclick = () => step(1);
+  const close = () => { v.hidden = true; v.innerHTML = ''; if (u) URL.revokeObjectURL(u); document.removeEventListener('keydown', onKey); };
   $('[data-a=x]', v).onclick = close;
   $('[data-a=del]', v).onclick = async () => {
     if (!confirm('Удалить это фото?')) return;
+    const p = list[i];
     if (p.remotePath) await addPendingDelete(p.remotePath);
     await dbDel('photos', p.id);
-    close(); await photoWidget(o, box); changed();
+    list.splice(i, 1); changed(); photoWidget(o, box);
+    if (!list.length) { close(); return; }
+    i = Math.min(i, list.length - 1); show();
   };
   // Модель с шильдика — распознаётся в телефоне, вы выбираете и проверяете
   $('[data-a=ocr]', v).onclick = async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
     const reset = () => { btn.textContent = 'Считать модель'; btn.disabled = false; };
     try {
-      const r = await readPlate(p.blob, (t) => { btn.textContent = t; });
+      const r = await readPlate(list[i].blob, (t) => { btn.textContent = t; });
       reset();
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
       const res = await plateDialog(r, fresh.model || '');
