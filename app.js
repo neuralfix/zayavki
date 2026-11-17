@@ -13,7 +13,7 @@ const DEVICES = ['Холодильник', 'Стиральная машина', 
 const EXP_CATS = ['Реклама', 'Бензин', 'Инструмент', 'Запчасти впрок', 'Связь', 'Прочее'];
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Термостат', 'Датчик', 'Подшипники', 'ТЭН', 'Насос', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', closed: 'Закрыта', cancelled: 'Отменена' };
-const APP_VERSION = '1.6'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.7'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'open', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -669,9 +669,9 @@ async function renderSettings() {
       <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".txt,.json,text/plain,application/json" hidden></label>
     </div>
     <div class="card"><h2>Таблица для Excel</h2>
-      <p class="note" style="margin-top:0"><b class="neg">Не зашифрована.</b> Сохраняется только в «Загрузки» этого телефона.
-        Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
-      <button class="btn sec" id="csv">Скачать таблицу заявок</button>
+      <p class="note" style="margin-top:0">Скачать можно только с паролем. Сам файл <b class="neg">не зашифрован</b>:
+        он сохраняется в «Загрузки» этого телефона. Не пересылайте его и удалите, когда он больше не нужен.</p>
+      <button class="btn sec" id="csv">🔒 Скачать таблицу заявок</button>
     </div>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
@@ -785,6 +785,18 @@ async function renderSettings() {
   };
   $('#download').onclick = async () => { const f = await dumpFile(); if (f) saveFile(f); };
   $('#csv').onclick = async () => {
+    // Открытая таблица — только тому, кто знает пароль (защита от чужих рук на разблокированном телефоне)
+    if (!(await hasPassword())) { toast('Сначала задайте пароль выше'); return; }
+    for (let attempt = 0; ; attempt++) {
+      const pw = await passwordDialog({
+        title: 'Пароль для таблицы',
+        text: attempt ? 'Пароль не подошёл. Попробуйте ещё раз.' : 'Таблица не зашифрована. Чтобы скачать её, введите пароль приложения.',
+      });
+      if (pw == null) return;
+      toast('Проверяю…');
+      if (await checkPassword(pw)) break;
+      if (attempt >= 4) { toast('Слишком много неверных попыток'); return; }
+    }
     const d = await buildDump();
     saveFile(new File([ordersCsv(d.orders)], 'заявки-' + toDateInput(Date.now()) + '.csv', { type: 'text/csv' }));
   };
