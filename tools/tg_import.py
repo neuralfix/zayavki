@@ -78,8 +78,15 @@ def parse_head(line):
     dev = device_of(line)
     parts = [p.strip() for p in line.split(',') if p.strip()]
     addr, name = [], ''
+    dev_tail = r'(?i)\s+(' + '|'.join(rx for _, rx in DEVICES) + r')\.?$'
     for p in parts:
         if device_of(p) and len(p) <= 22 and not re.search(r'\d', p):
+            continue
+        p = re.sub(dev_tail, '', p).strip()  # «Комсомольская 15-7 тв» → адрес без «тв»
+        # «… 3 эт. Мария» — имя после этажа без запятой
+        m = re.match(r'^(.*\d+\s*эт\.?)\s+([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2})$', p)
+        if m and not name:
+            addr.append(m.group(1)); name = m.group(2)
             continue
         words = p.split()
         if not name and not re.search(r'\d', p) and 1 <= len(words) <= 3 and all(w[:1].isupper() for w in words) and addr:
