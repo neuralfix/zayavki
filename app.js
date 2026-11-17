@@ -13,6 +13,7 @@ const DEVICES = ['Холодильник', 'Стиральная машина', 
 const EXP_CATS = ['Реклама', 'Бензин', 'Инструмент', 'Запчасти впрок', 'Связь', 'Прочее'];
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Термостат', 'Датчик', 'Подшипники', 'ТЭН', 'Насос', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', closed: 'Закрыта', cancelled: 'Отменена' };
+const APP_VERSION = '1.6'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'open', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -672,7 +673,27 @@ async function renderSettings() {
         Не пересылайте её, если в ней есть телефоны и адреса клиентов.</p>
       <button class="btn sec" id="csv">Скачать таблицу заявок</button>
     </div>
-    <p class="note">Занято в телефоне: ${est || '—'}. Версия 1.5<br>Справочник улиц: © участники OpenStreetMap (ODbL)</p>`;
+    <div class="card"><h2>Приложение</h2>
+      <div class="stat">
+        <span>Версия</span><b>${APP_VERSION}</b>
+        <span>Занято в телефоне</span><span>${est || '—'}</span>
+      </div>
+      <button class="btn sec" id="checkUpd" style="margin-top:12px">Проверить обновление</button>
+      <p class="note">Обновление не трогает заявки, фото и пароль — они остаются в телефоне.</p>
+    </div>
+    <p class="note">Справочник улиц: © участники OpenStreetMap (ODbL)</p>`;
+
+  $('#checkUpd').onclick = async (e) => {
+    const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
+    const l = await latestVersion();
+    b.disabled = false; b.textContent = 'Проверить обновление';
+    if (!l) { toast('Нет связи — проверьте интернет'); return; }
+    if (isNewer(l.version, APP_VERSION)) {
+      if (confirm('Есть новая версия ' + l.version + (l.notes ? ':\n' + l.notes : '') + '\n\nОбновить сейчас?')) updateApp();
+    } else {
+      toast('У вас последняя версия ' + APP_VERSION);
+    }
+  };
 
   const sp = $('#setPw'); if (sp) sp.onclick = async () => {
     const pw = await passwordDialog({ title: 'Новый пароль', text: 'Не меньше 8 символов. Запишите его.', repeat: true });
@@ -813,8 +834,58 @@ async function onDiskConnected(token) {
   } catch (e) { toast(e.message); }
 }
 
+// ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
+const _verNum = (v) => String(v || '0').split('.').map((x) => parseInt(x, 10) || 0);
+function isNewer(a, b) {
+  const x = _verNum(a); const y = _verNum(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return false;
+}
+
+// Какая версия лежит на сайте. null — нет связи.
+async function latestVersion() {
+  try {
+    const r = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+// Скачать новую версию и перезапустить приложение. Данные в телефоне не трогаются.
+async function updateApp() {
+  toast('Обновляю приложение…');
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) {
+      await reg.update();
+      const w = reg.installing || reg.waiting;
+      if (w && w.state !== 'activated') {
+        await new Promise((res) => {
+          w.addEventListener('statechange', () => { if (w.state === 'activated' || w.state === 'redundant') res(); });
+          setTimeout(res, 20000);
+        });
+      }
+    }
+  } catch (e) { /* перезапустим как есть */ }
+  location.reload();
+}
+
+let _lastUpdateCheck = 0;
+async function checkUpdateBanner(force) {
+  if (!navigator.onLine || (!force && Date.now() - _lastUpdateCheck < 30 * 60 * 1000)) return;
+  _lastUpdateCheck = Date.now();
+  const l = await latestVersion();
+  const bar = $('#updBar');
+  if (!l || !isNewer(l.version, APP_VERSION)) { bar.hidden = true; return; }
+  bar.innerHTML = `<span>Доступна новая версия ${esc(l.version)}${l.notes ? '<small>' + esc(l.notes) + '</small>' : ''}</span>
+    <button type="button">Обновить</button>`;
+  bar.hidden = false;
+  $('button', bar).onclick = updateApp;
+}
+
 async function start() {
   $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/orders'));
+  checkUpdateBanner(true);
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);
   await route();
@@ -822,7 +893,7 @@ async function start() {
 
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.register('sw.js');
+      const reg = await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
       if (reg.periodicSync) {
         try {
           const st = await navigator.permissions.query({ name: 'periodic-background-sync' });
@@ -836,7 +907,8 @@ async function start() {
   if (syncChannel) syncChannel.onmessage = () => { updateSyncBadge(); if (location.hash.startsWith('#/settings') && !document.activeElement?.matches('input')) renderSettings(); };
   window.addEventListener('online', () => { updateSyncBadge(); requestSync(); });
   window.addEventListener('offline', updateSyncBadge);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) requestSync(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) { requestSync(); checkUpdateBanner(); } });
+  window.addEventListener('online', () => checkUpdateBanner());
   setInterval(() => { if (navigator.onLine) syncNow().then(updateSyncBadge); }, 5 * 60 * 1000);
   if (navigator.onLine) requestSync();
 }

@@ -3,12 +3,16 @@
 'use strict';
 importScripts('db.js', 'crypto.js', 'sync.js');
 
-const CACHE = 'zayavki-v6';
+// При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в app.js.
+const CACHE = 'zayavki-v7';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'addr.js', 'streets.json', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' — берём файлы с сервера, а не из кэша браузера, чтобы не застрять на старой версии
+  e.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -22,6 +26,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin) return;
+  if (url.pathname.endsWith('/version.json')) return; // проверка обновления — всегда с сервера
   const key = req.mode === 'navigate' ? 'index.html' : req;
   e.respondWith(caches.open(CACHE).then(async (cache) => {
     const cached = await cache.match(key, { ignoreSearch: true });

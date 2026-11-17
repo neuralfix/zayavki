@@ -196,6 +196,15 @@ textarea.input { min-height: 72px; resize: vertical; }
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+/* Полоска «доступна новая версия» */
+#updBar {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  background: #f0b84f; color: #2b1d00; font-size: 14px; font-weight: 600;
+}
+#updBar span { flex: 1; }
+#updBar small { display: block; font-weight: 400; }
+#updBar button { border: 0; border-radius: 10px; padding: 8px 14px; background: #2b1d00; color: #fff; font-weight: 650; }
+
 /* Подсказки адреса */
 .suggest-host { position: relative; }
 .suggest {
