@@ -288,7 +288,10 @@ async function _readLocal(blob, onStep) {
 // на шильдик и не похоже на договор, квитанцию или запчасть. Сомнение — не отправляем.
 const LAT2CYR = { A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О', P: 'Р', C: 'С', T: 'Т', X: 'Х', Y: 'У' };
 const SCAN_PRIVATE = /(ДОГОВОР|ЗАКАЗЧИК|ИСПОЛНИТЕЛ|ПАСПОРТ|ПОДПИС|(^|[^А-ЯЁ])Ф\.?\s?И\.?\s?О(?![А-ЯЁ])|КВИТАНЦ|СТОИМОСТ|ИТОГО|НАРЯД|КЛИЕНТ|ГАРАНТИЙН|ПОТРЕБИТЕЛ|ОПЛАТ|АКТ\s+ВЫП|ФАМИЛИ|ПРОЖИВА|ТЕЛЕФОН|ТЕЛ\.)/;
-const SCAN_PHONE = /(\+7|8)\D{0,3}9\d\d\D{0,3}\d{3}\D{0,2}\d{2}\D{0,2}\d{2}/;
+// Признаки адреса и имени с отчеством. Шильдик с адресом завода тоже пропустится — так безопаснее.
+const SCAN_ADDR = /(^|[^А-ЯЁ])(УЛ\.|УЛИЦА|КВ\.|КВАРТИР|ПОДЪЕЗД|ЭТАЖ|ДОМ\s*\d|Д\.\s*\d|ПР-?Т|ПРОСПЕКТ|ПЕР\.|ПЕРЕУЛОК|МКР|МИКРОРАЙОН)/;
+const SCAN_PATRONYMIC = /[А-ЯЁ]{3,}(ОВИЧ|ЕВИЧ|ОВНА|ЕВНА|ИЧНА|ИНИЧНА)(?![А-ЯЁ])/;
+const SCAN_PHONE =/(\+7|8)\D{0,3}9\d\d\D{0,3}\d{3}\D{0,2}\d{2}\D{0,2}\d{2}/;
 const SCAN_PART = /(COMPRESSOR|КОМПРЕССОР|EMBRACO|DANFOSS|SECOP|JIAXIPERA|HUAYI|DONPER|CUBIGEL|TECUMSEH|WANBAO|\bLBP\b|\bHBP\b|THERMOSTAT|ТЕРМОСТАТ|RANCO|\bATEA\b|\bRELAY\b|(^|[^А-ЯЁ])РЕЛЕ(?![А-ЯЁ])|\bPCB\b|WELLING|NIDEC|ASKOLL|LEILI|HANYU|PLASET|ТАЙМЕР)/i; // наклейки компрессора, насоса, мотора, платы
 const SCAN_PLATE = [OCR_KEY, OCR_TYPE_KEY, /\d\s?(V|В)\b|VAC|~\s?\d/i, /\d\s?(HZ|ГЦ)/i, /\d\s?(W|ВТ|KW|КВТ)\b/i, /\d\s?(KG|КГ)\b/i,
   /R-?(600|134|12)A?\b/i, /(ХЛАДАГЕНТ|REFRIGERANT|КЛИМАТИЧ|CLIMAT|КЛАСС|CLASS)/i, /(MADE IN|СДЕЛАНО|ИЗГОТОВ|PRODUCED)/i, OCR_DEVICE,
@@ -298,7 +301,7 @@ const SCAN_PLATE = [OCR_KEY, OCR_TYPE_KEY, /\d\s?(V|В)\b|VAC|~\s?\d/i, /\d\s?(H
 function screenPlate(text) {
   const t = String(text || '');
   const cyr = t.toUpperCase().replace(/[ABEKMHOPCTXY]/g, (ch) => LAT2CYR[ch]);
-  if (SCAN_PRIVATE.test(cyr) || SCAN_PHONE.test(t)) return { kind: 'private', n: 0 };
+  if (SCAN_PRIVATE.test(cyr) || SCAN_ADDR.test(cyr) || SCAN_PATRONYMIC.test(cyr) || SCAN_PHONE.test(t)) return { kind: 'private', n: 0 };
   if (SCAN_PART.test(t) || SCAN_PART.test(cyr)) return { kind: 'part', n: 0 };
   const n = SCAN_PLATE.filter((re) => re.test(t)).length + (plateCandidates(t).brand ? 1 : 0);
   return { kind: n >= 2 ? 'plate' : 'none', n };

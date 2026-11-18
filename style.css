@@ -313,3 +313,6 @@ details.fold[open] > summary { margin-bottom: 10px; }
 .dprog { margin-top: 10px; }
 .dprog-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-bottom: 4px; }
 .dprog-bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+
+/* СД: деталь ждёт дольше недели */
+.item.late { border-left: 4px solid var(--neg, #e5534b); }

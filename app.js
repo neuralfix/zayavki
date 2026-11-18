@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.20'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.21'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -120,6 +120,7 @@ async function updateSyncBadge() {
   if (!s.connected) { b.textContent = 'Диск не подключён'; b.classList.add('warn'); return; }
   if (!s.hasKey) { b.textContent = '🔒 Нужен пароль'; b.classList.add('warn'); return; }
   const pending = s.pendingPhotos + (s.dataPending ? 1 : 0) + s.pendingDeletes;
+  if (s.paused) { b.textContent = '⏸ Диск на паузе'; b.classList.add('warn'); return; }
   if (s.error) { b.textContent = '⚠ Ошибка Диска'; b.classList.add('err'); return; }
   if (pending) {
     b.textContent = (navigator.onLine ? '↻ Отправка' : '⏸ Нет сети') + (s.pendingPhotos ? ' · фото ' + s.pendingPhotos : '');
@@ -161,6 +162,10 @@ const isActive = (s) => s === 'open' || s === 'sd';
 const shortAddress = (o) => [o.address, o.apt ? 'кв. ' + o.apt : ''].filter(Boolean).join(', ');
 const fullAddress = (o) => [o.address, o.apt ? 'кв. ' + o.apt : '', o.entrance ? 'под. ' + o.entrance : '', o.floor ? 'эт. ' + o.floor : ''].filter(Boolean).join(', ');
 const dayShort = (ts) => new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }).replace('.', '');
+// СД: деталь ждёт дольше недели — подсвечиваем, чтобы клиент не потерялся
+const SD_LATE_DAYS = 7;
+const sdDays = (o) => (o.sd?.at ? Math.floor((Date.now() - o.sd.at) / 864e5) : 0);
+const sdLate = (o) => o.status === 'sd' && sdDays(o) >= SD_LATE_DAYS;
 const sdLine = (o) => o.sd ? ['на СД с ' + dayShort(o.sd.at), o.sd.what, o.sd.advance ? 'аванс ' + money(o.sd.advance) : ''].filter(Boolean).join(' · ') : '';
 // Для Яндекс Карт: улица Уфы → «Уфа, …», село района («Миловка, ул. …») → «Уфимский район, …». Без квартиры.
 const mapsQuery = (o) => (/^[А-ЯЁA-Z][^,]*,/.test(o.address) && !/^(ул|улица|пр|пр-т|проспект|пер|переулок|б-р|ш|шоссе|туп|пл|наб|мкр)(?=[\s.,]|$)/i.test(o.address) ? 'Уфимский район, ' : 'Уфа, ') + o.address;
@@ -230,10 +235,10 @@ function drawList(all) {
   el.innerHTML = list.map((o) => {
     let when;
     if (o.status === 'open') when = o.visitAt ? '🕑 ' + fmtDate(o.visitAt) : 'создана ' + fmtDate(o.createdAt);
-    else if (o.status === 'sd') when = '🔧 ' + sdLine(o);
+    else if (o.status === 'sd') when = '🔧 ' + sdLine(o) + (sdLate(o) ? ' · ⚠ ждёт ' + sdDays(o) + ' ' + daysWord(sdDays(o)) : '');
     else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
     const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
-    return `<a class="item" href="#/order/${o.id}">
+    return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
       <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
       <div class="row small"><span class="grow">${esc([o.name, shortAddress(o)].filter(Boolean).join(' · ') || o.phone || o.notes || '—')}</span></div>
       <div class="row small muted"><span class="grow">${esc(when)}</span>${sum}</div>
@@ -275,6 +280,7 @@ async function renderToday() {
   const noTime = open.filter((o) => !o.visitAt).sort((a, b) => b.createdAt - a.createdAt);
   const tomorrow = open.filter((o) => o.visitAt >= end && o.visitAt < end2).sort(byTime);
   const sd = all.filter((o) => o.status === 'sd').length;
+  const sdOld = all.filter(sdLate).length;
   const sec = (title, list, t, cls = '') => list.length ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>
     <div class="list">${list.map((o) => todayItem(o, t(o))).join('')}</div>` : '';
   view.innerHTML = `
@@ -283,7 +289,7 @@ async function renderToday() {
     ${sec('Без времени', noTime, () => '')}
     ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.<br>Нажмите «+», чтобы добавить.</div>' : ''}
     ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}
-    ${sd ? `<a class="item sd-link" href="#/orders" id="toSd">🔧 На СД: ${sd}</a>` : ''}
+    ${sd ? `<a class="item sd-link${sdOld ? ' late' : ''}" href="#/orders" id="toSd">🔧 На СД: ${sd}${sdOld ? ` <span class="neg">· ⚠ ${sdOld} ${sdOld === 1 ? 'ждёт' : 'ждут'} больше недели</span>` : ''}</a>` : ''}
     <a class="fab" href="#/new" aria-label="Новая заявка">+</a>`;
   const toSd = $('#toSd'); if (toSd) toSd.onclick = () => { state.filter = 'sd'; };
 }
@@ -309,6 +315,7 @@ async function renderOrderForm(id, warrantyFromId) {
   let warrantyOf = v.warrantyOf || null;
   view.innerHTML = `
     <form id="f" autocomplete="off">
+      ${!o && !src ? '<button type="button" class="btn sec" id="pasteOrder" style="margin-bottom:12px">📋 Вставить заявку из сообщения</button>' : ''}
       <div class="client-hint warn" id="wbanner" ${warrantyOf ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
       <div class="field"><label>Телефон</label>
         <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
@@ -401,6 +408,28 @@ async function renderOrderForm(id, warrantyFromId) {
     if (!m && digits(t).length < 5) { toast('В буфере нет номера'); return; }
     phoneIn.value = fmtPhone(m ? m[0] : t.trim());
     showClient();
+  };
+
+  // Скопировали сообщение с заявкой — раскладываем по полям (разбор прямо в телефоне)
+  const fillFrom = (t) => {
+    const r = parseOrderText(t);
+    let n = 0;
+    for (const k of ['phone', 'name', 'address', 'apt', 'entrance', 'floor', 'model', 'problem']) if (r[k]) { $('[name=' + k + ']').value = r[k]; n++; }
+    if (r.entrance || r.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
+    if (r.device && device !== r.device) { $$('#dev .chip').find((x) => x.dataset.v === r.device)?.click(); n++; }
+    if (r.visitAt) { visitIn.value = toDTInput(r.visitAt); showConflicts(); n++; }
+    if (r.whenNote) { const nt = $('[name=notes]'); nt.value = [nt.value.trim(), r.whenNote].filter(Boolean).join('\n'); n++; }
+    if (r.phone) showClient();
+    return n;
+  };
+  const po = $('#pasteOrder'); if (po) po.onclick = async () => {
+    let t = '';
+    try { t = await navigator.clipboard.readText(); } catch (e) { /* не дали — попросим вставить вручную */ }
+    if (t && t.trim().length >= 8 && fillFrom(t) >= 2) { toast('Заполнено из сообщения — проверьте поля', 4000); return; }
+    const res = await formDialog('Заявка из сообщения', `<p class="note" style="margin-top:0">Вставьте текст сообщения: долгое нажатие → «Вставить».</p>
+      <textarea class="input" name="t" rows="7">${esc(t || '')}</textarea>`, (d) => $('[name=t]', d).focus());
+    if (!res || !res.t) return;
+    toast(fillFrom(res.t) ? 'Заполнено из сообщения — проверьте поля' : 'Не получилось разобрать — заполните вручную', 4000);
   };
 
   if (!o && !src) phoneIn.focus();
@@ -884,7 +913,8 @@ async function renderReport() {
   const expenses = await dbAll('expenses');
   const key = state.month;
   const s = monthStats(orders, expenses, key);
-  const avg = s.closed.length ? s.income / s.closed.length : 0;
+  const paid = s.closed.filter((o) => (Number(o.income) || 0) > 0).length;   // закрытые с оплатой 0 ₽ в средний чек не идут
+  const avg = paid ? s.income / paid : 0;
   const byDev = {};
   s.closed.forEach((o) => { const d = o.device || 'Не указано'; byDev[d] = byDev[d] || { n: 0, net: 0 }; byDev[d].n++; byDev[d].net += orderNet(o); });
   const months = [-5, -4, -3, -2, -1, 0].map((k) => shiftMonth(key, k));
@@ -939,7 +969,7 @@ async function renderReport() {
         <span>Сделал</span><b>${s.closed.length}</b>
         <span>Отказ</span><span>${s.refused}</span>
         <span>Отмена</span><span>${s.cancelled}</span>
-        ${total ? `<span class="muted">Доля выездов с деньгами</span><span class="muted">${Math.round(s.closed.length / Math.max(1, s.closed.length + s.refused) * 100)}%</span>` : ''}
+        ${total ? `<span class="muted">Доля выездов с деньгами</span><span class="muted">${Math.round(s.closed.filter((o) => (Number(o.income) || 0) > 0).length / Math.max(1, s.closed.length + s.refused) * 100)}%</span>` : ''}
         <div class="sep"></div>
         <span>Средний чек</span><b>${money(avg)}</b>
         <span>Сейчас на СД</span><span>${sdNow}</span>
@@ -1008,7 +1038,7 @@ const askCopyPassword = (attempt) => passwordDialog({
 const syncMessage = (r) => ({
   ok: 'Готово, отправлено', nothing: 'Всё уже на Диске',
   waiting: r.why === 'busy' ? 'Диск попросил подождать — продолжу позже' : 'Нет связи — отправлю позже',
-  busy: 'Уже отправляется', nokey: 'Сначала задайте пароль', off: 'Диск не подключён',
+  busy: 'Уже отправляется', paused: 'Отправка на паузе — проверьте копию на Диске', nokey: 'Сначала задайте пароль', off: 'Диск не подключён',
 }[r.status] || r.error || 'Ошибка');
 
 // ---------- Отправка на Диск с процентом ----------
@@ -1062,6 +1092,23 @@ async function sendAll() {
   toast(syncMessage(r));
   updateSyncBadge();
   if (location.hash.startsWith('#/settings')) renderSettings();
+}
+
+// Импорт из Telegram: какие снимки ещё не добавлены. Снимок помнит имя файла (tgName); у добавленных
+// до версии 1.21 имени нет — такие заявки считаем уже с фото, чтобы не задвоить.
+async function tgRebuildPhotoMap(photoMap) {
+  const map = (await getMeta('tgPhotoMap')) || {};
+  const ids = new Set((await dbAll('orders')).map((o) => o.id));
+  const photos = (await dbAll('photos')).filter((p) => p.from === 'telegram');
+  const added = new Set(photos.filter((p) => p.tgName).map((p) => p.orderId + '|' + p.tgName));
+  const legacy = new Set(photos.filter((p) => !p.tgName).map((p) => p.orderId));
+  // значение — id заявки или список id (один снимок отправлен к двум заявкам)
+  for (const [name, v] of Object.entries(photoMap || {})) {
+    const list = (Array.isArray(v) ? v : [v]).filter((oid) => ids.has(oid) && !legacy.has(oid) && !added.has(oid + '|' + name));
+    if (list.length) map[name] = list; else delete map[name];
+  }
+  await setMeta('tgPhotoMap', map);
+  return Object.keys(map).length;
 }
 
 // ---------- Модели в старых заявках: пачкой ----------
@@ -1131,6 +1178,9 @@ async function renderSettings() {
       <span>Ждут отправки</span><span>${s.pendingPhotos} фото${s.dataPending ? ' + данные' : ''}</span>
     </div>
     ${s.pendingPhotos ? diskProgressHtml(s.uploadedPhotos, s.uploadedPhotos + s.pendingPhotos) : ''}
+    ${s.paused ? `<div class="client-hint bad" style="margin-top:10px"><b>⏸ Отправка на паузе.</b>
+      ${s.paused === 'both' ? 'Данные в телефоне и на Диске различаются — выберите, какую копию оставить.' : 'Не удалось проверить копию на Диске (нет связи или другой пароль).'}
+      <br><button type="button" class="link" id="checkCopy">Проверить копию на Диске</button></div>` : ''}
     ${s.error ? `<p class="small neg">${esc(s.error)}</p>` : ''}
     ${!s.hasKey ? '<p class="small neg">Задайте пароль выше — без него на Диск ничего не отправляется.</p>' : ''}
     ${s.waiting && !s.error && !sendingAll ? `<p class="small muted">${WAIT_WHY[s.waitWhy] || WAIT_WHY.net}</p>` : ''}
@@ -1209,8 +1259,9 @@ async function renderSettings() {
       <div id="scanProg">${plateScanRun ? scanProgHtml(plateScanRun) : ''}</div>
       ${scanInfo.photos || plateScanRun ? `<button class="btn" id="scanRun">${plateScanRun ? 'Стоп' : 'Распознать все'}</button>` : ''}
       ${scanInfo.auto && !plateScanRun ? `<button class="btn sec" id="scanUndo">Убрать автоматически вписанные (${scanInfo.auto})</button>` : ''}
-      <p class="note">Каждое фото сначала читается прямо в телефоне, без интернета. В Яндекс уходят только похожие на шильдик.
-        Договоры, квитанции, наклейки запчастей и всё, где виден номер телефона, не отправляются. Если сомнение, фото тоже не отправляется.
+      <p class="note">Каждое фото сначала читается прямо в телефоне, без интернета. В Яндекс уходят только похожие на шильдик, причём всё фото целиком.
+        Фото, где телефон разглядел договор, квитанцию, адрес, имя с отчеством или номер телефона, не отправляются, сомнительные тоже.
+        Это <b>снижает риск</b> отправки личных данных, но не исключает его полностью: телефон читает фото не идеально.
         Пока идёт, экран не гаснет. Можно остановить и потом продолжить с того же места.</p>` : ''}
     </details>
     <div class="card"><h2>Приложение</h2>
@@ -1326,13 +1377,16 @@ async function renderSettings() {
     updateSyncBadge(); renderSettings(); requestSync();
   };
   const sn = $('#syncNow'); if (sn) sn.onclick = () => sendAll();
+  const cc = $('#checkCopy'); if (cc) cc.onclick = async () => { cc.disabled = true; cc.textContent = 'Проверяю…'; await checkDiskCopy(); renderSettings(); };
   const fd = $('#fromDisk'); if (fd) fd.onclick = async () => {
     if (!confirm('Заменить данные в телефоне копией с Диска? Несохранённые на Диск изменения пропадут.')) return;
     try {
       const d = await downloadDiskDump(askCopyPassword);
       if (!d) { toast('На Диске ещё нет копии'); return; }
+      const local = await buildDump();
+      if (local.orders.length + local.expenses.length) await saveHistoryCopy('phone', local);
       await restoreDump(d, true);
-      await setMeta('diskLayout', 2);
+      await setMeta('diskLayout', 2); await setMeta('syncPaused', null);
       toast('Восстановлено с Диска'); go('#/orders');
     } catch (e) { toast(e.message); }
   };
@@ -1402,7 +1456,12 @@ async function renderSettings() {
       const fresh = d.orders.filter((o) => o.id && !have.has(o.id)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       const closed = fresh.filter((o) => o.status === 'closed');
       const net = closed.reduce((s, o) => s + orderNet(o), 0);
-      if (!fresh.length) { toast('Все заявки из этого файла уже добавлены'); return; }
+      if (!fresh.length) {
+        // заявки уже есть — но если прошлый раз прервался, допишем, какие фото к каким заявкам
+        const left = await tgRebuildPhotoMap(d.photoMap);
+        toast('Все заявки из этого файла уже добавлены' + (left ? '. Ждут фото: ' + left : ''), 5000);
+        renderSettings(); return;
+      }
       if (!confirm(`В файле заявок: ${d.orders.length}, новых: ${fresh.length}.\n` +
         `Закрытых: ${closed.length}, чистыми по ним: ${money(net)}.\n` +
         `Отказ: ${fresh.filter((o) => o.status === 'refused').length}, отмена: ${fresh.filter((o) => o.status === 'cancelled').length}, ` +
@@ -1414,14 +1473,7 @@ async function renderSettings() {
         await dbPut('orders', o);
       }
       // какие фото к каким заявкам — запоминаем до шага «Добавить фото»
-      const map = (await getMeta('tgPhotoMap')) || {};
-      const ids = new Set((await dbAll('orders')).map((o) => o.id));
-      // значение — id заявки или список id (один снимок отправлен к двум заявкам)
-      for (const [name, v] of Object.entries(d.photoMap || {})) {
-        const list = (Array.isArray(v) ? v : [v]).filter((oid) => ids.has(oid));
-        if (list.length) map[name] = list;
-      }
-      await setMeta('tgPhotoMap', map);
+      await tgRebuildPhotoMap(d.photoMap);
       await changed();
       toast('Добавлено заявок: ' + fresh.length);
       renderSettings();
@@ -1444,7 +1496,8 @@ async function renderSettings() {
           const o = await dbGet('orders', oid);
           if (!o) continue;
           blob = blob || await compressImage(await f.blob(), 1600, 0.75);
-          await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram' });
+          if ((await dbByIndex('photos', 'orderId', o.id)).some((p) => p.tgName === f.name)) continue;   // уже добавлено до обрыва
+          await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: o.createdAt || Date.now(), uploaded: 0, from: 'telegram', tgName: f.name });
         }
         delete map[f.name];
         done++;
@@ -1518,17 +1571,86 @@ async function handleOAuthReturn() {
 async function onDiskConnected(token) {
   await setMeta('ydToken', token);
   await setMeta('syncError', null);
-  const hasLocal = (await dbAll('orders')).length + (await dbAll('expenses')).length > 0;
-  if (hasLocal) { await markDirty(); return; } // при первом подключении отправить всё
-  // Телефон пустой — возможно, это новый телефон, а копия уже есть на Диске.
-  try {
-    const d = await downloadDiskDump(askCopyPassword);
-    if (d && confirm('На Диске есть копия: заявок ' + d.orders.length + '. Загрузить её в телефон?')) {
-      await restoreDump(d, true);
-      await setMeta('diskLayout', 2);
-      toast('Восстановлено с Диска');
+  await checkDiskCopy();
+}
+
+// Копия на Диске — это более старое состояние этого же телефона? (все её заявки и расходы есть здесь, не новее)
+function _isOlderCopyOfThis(disk, local) {
+  const has = (list, other) => { const m = new Map(other.map((x) => [x.id, x])); return list.every((x) => m.has(x.id) && (m.get(x.id).updatedAt || 0) >= (x.updatedAt || 0)); };
+  return has(disk.orders, local.orders) && has(disk.expenses || [], local.expenses);
+}
+const _lastEdit = (d) => Math.max(0, ...d.orders.map((o) => o.updatedAt || o.createdAt || 0), ...(d.expenses || []).map((e) => e.updatedAt || e.createdAt || 0));
+const _copyLine = (d, when) => `заявок <b>${d.orders.length}</b>, расходов ${(d.expenses || []).length}${when ? ', ' + esc(when) : ''}`;
+
+// Проверить копию на Диске перед тем, как что-то туда отправлять. Сомнение — отправка на паузе.
+async function checkDiskCopy() {
+  const local = await buildDump();
+  const hasLocal = local.orders.length + local.expenses.length > 0;
+  let d;
+  try { d = await downloadDiskDump(askCopyPassword); } catch (e) {
+    await setMeta('syncPaused', 'check');
+    toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Диск» → «Проверить копию».', 7000);
+    updateSyncBadge(); return;
+  }
+  const diskHas = d && d.orders.length + (d.expenses || []).length > 0;
+  if (!diskHas) { await setMeta('syncPaused', null); if (hasLocal) await markDirty(); updateSyncBadge(); requestSync(); return; }
+  if (!hasLocal) {
+    await setMeta('syncPaused', null);
+    if (confirm('На Диске есть копия: заявок ' + d.orders.length + '. Загрузить её в телефон?')) {
+      await restoreDump(d, true); await setMeta('diskLayout', 2); toast('Восстановлено с Диска');
     }
-  } catch (e) { toast(e.message); }
+    updateSyncBadge(); return;
+  }
+  if (_isOlderCopyOfThis(d, local)) { await setMeta('syncPaused', null); await markDirty(); updateSyncBadge(); requestSync(); return; }
+  await setMeta('syncPaused', 'both');
+  updateSyncBadge();
+  await diskChoiceDialog(d, local);
+}
+
+// В телефоне и на Диске разные данные. Ничего не затираем молча: показываем обе копии, выбираете вы.
+async function diskChoiceDialog(disk, local) {
+  const dd = document.createElement('dialog');
+  dd.className = 'pw';
+  dd.innerHTML = `<div class="dlg"><h3>На Диске другая копия</h3>
+    <p class="small" style="margin-top:0">Данные в телефоне и на Диске различаются. Пока вы не выберете, на Диск ничего не отправляется.</p>
+    <div class="stat">
+      <span>📱 В телефоне</span><span>${_copyLine(local, _lastEdit(local) ? 'правка ' + fmtDate(_lastEdit(local)) : '')}</span>
+      <span>☁ На Диске</span><span>${_copyLine(disk, disk.exportedAt ? 'сохранена ' + fmtDate(new Date(disk.exportedAt).getTime()) : '')}</span>
+    </div>
+    <button type="button" class="btn" data-v="disk" style="margin-top:12px">Загрузить с Диска в телефон</button>
+    <p class="note" style="margin-top:4px">Данные телефона сначала сохраню отдельной копией на Диске, в папке «История».</p>
+    <button type="button" class="btn sec" data-v="phone">Оставить телефон, заменить Диск</button>
+    <p class="note" style="margin-top:4px">Копия Диска сначала сохранится в «Историю».</p>
+    <button type="button" class="btn sec" data-v="later">Решу позже</button></div>`;
+  document.body.appendChild(dd);
+  const choice = await new Promise((res) => {
+    $$('[data-v]', dd).forEach((b) => b.onclick = () => res(b.dataset.v));
+    dd.addEventListener('cancel', (e) => { e.preventDefault(); res('later'); });   // «Назад» — решу позже
+    dd.showModal();
+  });
+  dd.close();
+  dd.remove();
+  try {
+    if (choice === 'disk') {
+      toast('Сохраняю копию телефона…');
+      await saveHistoryCopy('phone', local);
+      await restoreDump(disk, true);
+      await setMeta('diskLayout', 2);
+      await setMeta('syncPaused', null);
+      toast('Загружено с Диска. Прежние данные телефона — в «Истории» на Диске.', 5000);
+      route();
+    } else if (choice === 'phone') {
+      if (!confirm('Заменить копию на Диске данными телефона? Прежняя копия Диска сохранится в «Истории».')) { diskChoiceDialog(disk, local); return; }
+      toast('Сохраняю копию Диска…');
+      await saveHistoryCopy('disk');
+      await setMeta('syncPaused', null);
+      await markDirty();
+      toast('Отправляю данные телефона на Диск', 4000);
+      requestSync();
+    }
+  } catch (e) { toast('Не получилось: ' + e.message + '. Ничего не изменено.', 6000); }
+  updateSyncBadge();
+  if (location.hash.startsWith('#/settings')) renderSettings();
 }
 
 // ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================

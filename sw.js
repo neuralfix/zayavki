@@ -4,9 +4,9 @@
 importScripts('db.js', 'crypto.js', 'sync.js');
 
 // При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в app.js.
-const CACHE = 'zayavki-v21';
+const CACHE = 'zayavki-v22';
 const OCR_CACHE = 'zayavki-ocr-v1'; // распознавание шильдика: большие файлы, не перекачиваются при обновлении
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'addr.js', 'ocr.js', 'streets.json', 'manifest.webmanifest',
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'addr.js', 'ocr.js', 'parse.js', 'streets.json', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -22,7 +22,9 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 
-// Сначала из памяти телефона (мгновенно и без сети), в фоне — обновление с сервера.
+// Файлы приложения — только из комплекта своей версии. Новый комплект целиком скачивается при установке
+// новой версии (install), поэтому новая страница никогда не окажется без своего нового скрипта.
+const SHELL_PATHS = new Set(SHELL.map((u) => new URL(u, self.registration.scope).pathname));
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
@@ -33,15 +35,18 @@ self.addEventListener('fetch', (e) => {
       fetch(req).then((res) => { if (res && res.ok) c.put(req, res.clone()); return res; })));
     return;
   }
+  const shell = req.mode === 'navigate' || SHELL_PATHS.has(url.pathname);
   const key = req.mode === 'navigate' ? 'index.html' : req;
   e.respondWith(caches.open(CACHE).then(async (cache) => {
     const cached = await cache.match(key, { ignoreSearch: true });
-    const fresh = fetch(req).then((res) => {
-      if (res && res.ok) cache.put(key, res.clone());
+    if (shell && cached) return cached;            // комплект версии не подменяем по одному файлу
+    try {
+      const res = await fetch(req);
+      if (res && res.ok && !shell) cache.put(key, res.clone());
       return res;
-    }).catch(() => null);
-    if (cached) { e.waitUntil(fresh); return cached; }
-    return (await fresh) || new Response('Нет связи', { status: 503 });
+    } catch (err) {
+      return cached || new Response('Нет связи', { status: 503 });
+    }
   }));
 });
 
