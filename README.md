@@ -18,7 +18,9 @@
   python -I tools/gar_remote.py get 02 .claude/gar        # только файлы Башкортостана, ~230 МБ из архива ~58 ГБ
   python -I tools/build_streets_gar.py .claude/gar tools/streets_osm.json streets.json
   ```
-  затем закоммитить `streets.json`. В приложении: «Диск» → «Справочник улиц» → «Проверить обновление справочника».
+  затем закоммитить `streets.json`. Это же делает GitHub сам 5-го числа каждого месяца
+  (`.github/workflows/streets.yml`, вручную: Actions → «Справочник улиц» → Run workflow); коммитит, только если база новая.
+  В приложении: «Диск» → «Справочник улиц» → «Проверить обновление справочника».
   Старая сборка только из OSM: `tools/overpass_fetch.py`, `tools/build_streets.py`.
 - **Импорт из Telegram** сделан один раз и с версии 1.25 из приложения убран. Если к старым заявкам не дошли фото,
   на странице «Диск» появляется карточка «Фото из Telegram» для догрузки архива. Скрипт `tools/tg_import.py` остался.

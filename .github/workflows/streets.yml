@@ -1,0 +1,61 @@
+# Раз в месяц пересобирает справочник улиц (streets.json) из свежего ГАР ФНС.
+# Если ФНС выложила новую базу — справочник обновляется на сайте, и в приложении
+# кнопка «Проверить обновление справочника» его подтянет. Данных клиентов здесь нет.
+name: Справочник улиц
+
+on:
+  schedule:
+    - cron: '0 3 5 * *'   # 5-го числа каждого месяца, 06:00 по Москве
+  workflow_dispatch:       # запуск вручную: Actions → «Справочник улиц» → Run workflow
+
+permissions:
+  contents: write
+
+concurrency:
+  group: streets
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Скачать файлы Башкортостана из ГАР (~230 МБ)
+        run: python -I tools/gar_remote.py get 02 "$RUNNER_TEMP/gar"
+
+      - name: Собрать справочник
+        run: python -I tools/build_streets_gar.py "$RUNNER_TEMP/gar" tools/streets_osm.json "$RUNNER_TEMP/streets.json"
+
+      - name: Проверить, что справочник не сломан
+        run: |
+          python -I - "$RUNNER_TEMP/streets.json" streets.json <<'EOF'
+          import json, sys
+          new = json.load(open(sys.argv[1], encoding='utf-8'))
+          old = json.load(open(sys.argv[2], encoding='utf-8'))
+          n_new, n_old = len(new['s']), len(old['s'])
+          print('улиц было', n_old, 'стало', n_new, 'база от', old.get('date'), '->', new.get('date'))
+          # защита от обрезанной или пустой выгрузки: не меньше 90% прежнего и не меньше 3000
+          assert new.get('v') == 2 and new.get('date') and new.get('loc'), 'неверный формат'
+          assert n_new >= 3000 and n_new >= 0.9 * n_old, 'слишком мало улиц, справочник не заменяю'
+          assert new['date'] >= (old.get('date') or ''), 'база старее текущей'
+          EOF
+          cp "$RUNNER_TEMP/streets.json" streets.json
+
+      - name: Отправить, если база новая
+        run: |
+          if git diff --quiet -- streets.json; then
+            echo "Справочник не изменился"
+            exit 0
+          fi
+          DATE=$(python -I -c "import json; print(json.load(open('streets.json', encoding='utf-8'))['date'])")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add streets.json
+          git commit -m "Справочник улиц: ГАР от $DATE"
+          git push
