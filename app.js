@@ -48,8 +48,7 @@ const EXP_CATS = ['Реклама', 'Прочее'];
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const WARRANTY_DAYS = [0, 14, 30, 60, 90];
-const APP_VERSION = '1.17'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.18'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -172,7 +171,11 @@ function routeHref(o) {
   return 'intent://map_search?text=' + encodeURIComponent(q) +
     '#Intent;scheme=yandexnavi;package=ru.yandex.yandexnavi;S.browser_fallback_url=' + encodeURIComponent(maps) + ';end';
 }
-const daysWord = (n) => n % 10 === 1 && n % 100 !== 11 ? 'день' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'дня' : 'дней');
+const plural = (n, one, few, many) => n % 10 === 1 && n % 100 !== 11 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
+const daysWord = (n) => plural(n, 'день', 'дня', 'дней');
+// «12 дней» / «3 месяца»
+const warrantyText = (o) => o.warrantyMonths ? o.warrantyMonths + ' ' + plural(o.warrantyMonths, 'месяц', 'месяца', 'месяцев')
+  : o.warrantyDays ? o.warrantyDays + ' ' + daysWord(o.warrantyDays) : '';
 
 function matches(o, q) {
   if (!q) return true;
@@ -227,7 +230,7 @@ function drawList(all) {
     let when;
     if (o.status === 'open') when = o.visitAt ? '🕑 ' + fmtDate(o.visitAt) : 'создана ' + fmtDate(o.createdAt);
     else if (o.status === 'sd') when = '🔧 ' + sdLine(o);
-    else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false);
+    else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
     const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
     return `<a class="item" href="#/order/${o.id}">
       <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
@@ -305,7 +308,7 @@ async function renderOrderForm(id, warrantyFromId) {
   let warrantyOf = v.warrantyOf || null;
   view.innerHTML = `
     <form id="f" autocomplete="off">
-      <div class="client-hint warn" id="wbanner" ${warrantyOf ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + src.warrantyDays + ' ' + daysWord(src.warrantyDays) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
+      <div class="client-hint warn" id="wbanner" ${warrantyOf ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
       <div class="field"><label>Телефон</label>
         <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
           <button type="button" class="btn sec" id="pastePh">📋 Вставить</button></div>
@@ -462,7 +465,8 @@ async function renderOrder(id) {
         <span class="em">Чистыми</span><span class="em ${net >= 0 ? 'pos' : 'neg'}">${money(net)}</span>
       </div>
       ${o.workDone ? `<p class="small" style="margin:10px 0 0"><span class="muted">Что сделано:</span> ${esc(o.workDone)}</p>` : ''}
-      ${o.warrantyDays ? `<p class="small" style="margin:6px 0 0"><span class="muted">Гарантия:</span> ${o.warrantyDays} ${daysWord(o.warrantyDays)}</p>` : ''}
+      ${o.diagOnly && !/диагност/i.test(o.workDone || '') ? '<p class="small" style="margin:6px 0 0"><span class="tag-w">только диагностика</span></p>' : ''}
+      ${o.warrantyDays ? `<p class="small" style="margin:6px 0 0"><span class="muted">Гарантия:</span> ${warrantyText(o)} — до ${esc(new Date(o.closedAt + o.warrantyDays * 864e5).toLocaleDateString('ru-RU'))}</p>` : ''}
     </div>`;
   } else if (o.status === 'refused') {
     report = `<div class="card"><h2>Отказ · ${esc(fmtDate(o.closedAt, false))}</h2><p class="small" style="margin:0">Приехал, денег не взял${o.sd?.advance ? ', аванс вернул' : ''}.</p></div>`;
@@ -580,10 +584,16 @@ async function photoWidget(o, box) {
   }).join('');
   box.innerHTML = `
     ${photos.length ? `<div class="photos">${tiles}</div>` : '<div class="note">Фото пока нет</div>'}
-    <div class="add-ph"><label>+ Фото <span class="muted small">договор, шильдик, деталь, чек — можно сразу несколько</span><input type="file" accept="image/*" multiple></label></div>
+    <div class="add-ph">
+      <label>📷 Снять<span class="muted small">камера</span><input type="file" accept="image/*" capture="environment"></label>
+      <label>🖼 Галерея<span class="muted small">можно несколько</span><input type="file" accept="image/*" multiple></label>
+      <label>📁 Папки<span class="muted small">если галерея не грузит</span><input type="file" multiple></label></div>
     ${photos.some((p) => !p.uploaded && p.blob) ? '<div class="note" style="margin-top:6px">↑ — ещё не отправлено на Диск</div>' : ''}`;
   $$('input[type=file]', box).forEach((inp) => inp.onchange = async () => {
-    const files = [...inp.files]; if (!files.length) return;
+    // из «Папок» можно выбрать что угодно — берём только картинки
+    const files = [...inp.files].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
+    const picked = inp.files.length; inp.value = '';
+    if (!files.length) { if (picked) toast('Это не фото'); return; }
     toast('Сохраняю фото…');
     for (const f of files) {
       // крупнее и чётче, чтобы текст договора читался
@@ -696,13 +706,16 @@ async function renderClose(id) {
   const wasClosed = o.status === 'closed';
   setTitle('Отчёт · №' + o.num, true);
   const costs = (o.costs && o.costs.length) ? o.costs : [{ name: '', amount: '' }];
-  let warranty = o.warrantyDays != null ? o.warrantyDays : (wasClosed ? 0 : 30);
+  // Гарантия: число + дней/месяцев; по умолчанию 12 дней, у уже закрытой — как было
+  let warN = o.warrantyMonths || o.warrantyDays || (wasClosed ? '' : 12);
+  let warU = o.warrantyMonths ? 'm' : 'd';
   view.innerHTML = `
     <form id="f" autocomplete="off">
       <div class="card">
         <div class="field"><label>Взял с клиента, ₽ — вся сумма</label>
           <input class="input big" name="income" inputmode="decimal" placeholder="0" value="${o.income ? esc(o.income) : ''}">
-          ${o.sd?.advance ? `<p class="small warn-text" style="margin:6px 0 0">Аванс был ${money(o.sd.advance)} — впишите общую сумму вместе с ним.</p>` : ''}</div>
+          ${o.sd?.advance ? `<p class="small warn-text" style="margin:6px 0 0">Аванс был ${money(o.sd.advance)} — впишите общую сумму вместе с ним.</p>` : ''}
+          <label class="check" style="margin-top:8px"><input type="checkbox" id="diag" ${o.diagOnly ? 'checked' : ''}> Была только диагностика</label></div>
         <span class="label">Расходы — что купили по заявке</span>
         <div id="costs"></div>
         <button type="button" class="link" id="addCost">+ Добавить расход</button>
@@ -710,8 +723,10 @@ async function renderClose(id) {
         <div class="total" id="total"></div>
       </div>
       <div class="card">
-        <div class="field"><label>Гарантия</label>
-          <div class="chips" id="war">${WARRANTY_DAYS.map((d) => `<button type="button" class="chip ${warranty === d ? 'on' : ''}" data-d="${d}">${d ? d + ' ' + daysWord(d) : 'без гарантии'}</button>`).join('')}</div></div>
+        <div class="field"><label>Гарантия <span class="muted">— пусто или 0, если без гарантии</span></label>
+          <div class="war-row"><input class="input" id="warN" inputmode="numeric" placeholder="нет" value="${esc(warN)}">
+            <div class="seg" id="warU"><button type="button" data-u="d" class="${warU === 'd' ? 'on' : ''}">дней</button><button type="button" data-u="m" class="${warU === 'm' ? 'on' : ''}">месяцев</button></div>
+            <button type="button" class="chip" id="warNone">без гарантии</button></div></div>
         <div class="field"><label>Что сделано <span class="muted">— если пусто, подставятся запчасти</span></label><textarea class="input" name="workDone" placeholder="Например: замена компрессора, заправка">${esc(o.workDone)}</textarea></div>
         <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(o.closedAt || Date.now())}"></div>
       </div>
@@ -747,7 +762,14 @@ async function renderClose(id) {
     const empty = $$('.cost-row', box).find((r) => !$$('input', r)[0].value && !$$('input', r)[1].value);
     if (empty) { $$('input', empty)[0].value = ch.dataset.c; $$('input', empty)[1].focus(); } else addRow({ name: ch.dataset.c, amount: '' }, true);
   });
-  $$('#war .chip').forEach((c) => c.onclick = () => { warranty = Number(c.dataset.d); $$('#war .chip').forEach((x) => x.classList.toggle('on', x === c)); });
+  $$('#warU button').forEach((b) => b.onclick = () => { warU = b.dataset.u; $$('#warU button').forEach((x) => x.classList.toggle('on', x === b)); });
+  $('#warNone').onclick = () => { $('#warN').value = ''; };
+  $('#warN').oninput = () => { $('#warN').value = $('#warN').value.replace(/\D/g, '').slice(0, 3); };
+  $('#diag').onchange = () => {
+    const w = $('[name=workDone]');
+    if ($('#diag').checked) { $('#warN').value = ''; if (!w.value.trim()) w.value = 'Диагностика'; }
+    else if (w.value.trim() === 'Диагностика') w.value = '';
+  };
   $('#f').addEventListener('input', recalc);
   recalc();
   await photoWidget(o, $('#photos'));
@@ -758,14 +780,24 @@ async function renderClose(id) {
     const fresh = await dbGet('orders', id);
     const date = $('[name=date]').value;
     const cs = readCosts();
-    const work = $('[name=workDone]').value.trim() || cs.map((c) => c.name).filter(Boolean).join(', ');
+    const diag = $('#diag').checked;
+    const work = $('[name=workDone]').value.trim() || cs.map((c) => c.name).filter(Boolean).join(', ') || (diag ? 'Диагностика' : '');
+    const closedAt = fromDateInput(date, fresh.closedAt);
+    const n = parseInt($('#warN').value, 10) || 0;
+    let wDays = n, wMonths = null;
+    if (n && warU === 'm') {   // месяцы → точное число дней от даты закрытия
+      const end = new Date(closedAt); end.setMonth(end.getMonth() + n);
+      wDays = Math.round((end - closedAt) / 864e5); wMonths = n;
+    }
     Object.assign(fresh, {
       income: parseMoney($('[name=income]').value),
       costs: cs,
       workDone: work,
-      warrantyDays: warranty || null,
+      diagOnly: diag || undefined,
+      warrantyDays: wDays || null,
+      warrantyMonths: wMonths,
       status: 'closed',
-      closedAt: fromDateInput(date, fresh.closedAt),
+      closedAt,
       updatedAt: Date.now(),
     });
     await dbPut('orders', fresh);
