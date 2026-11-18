@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.19'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.20'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -1204,8 +1204,8 @@ async function renderSettings() {
         Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
       ${ocrUrl && ocrKey ? `<div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
       <b>Модели в старых заявках</b>
-      <p class="small" style="margin:6px 0">${scanInfo.photos ? `Заявок без модели, но с фото: <b>${scanInfo.list.length}</b> (непроверенных фото ${scanInfo.photos}).` : 'Все заявки без модели уже проверены.'}
-        Приложение само найдёт шильдики и впишет модели.</p>
+      <p class="small" style="margin:6px 0">${scanInfo.photos ? `Заявок без модели, но с фото: <b>${scanInfo.list.length}</b> (непроверенных фото ${scanInfo.photos}).
+        Приложение само найдёт шильдики и впишет модели. Уже проверенные фото повторно не читаются.` : 'Все фото заявок без модели уже проверены.'}</p>
       <div id="scanProg">${plateScanRun ? scanProgHtml(plateScanRun) : ''}</div>
       ${scanInfo.photos || plateScanRun ? `<button class="btn" id="scanRun">${plateScanRun ? 'Стоп' : 'Распознать все'}</button>` : ''}
       ${scanInfo.auto && !plateScanRun ? `<button class="btn sec" id="scanUndo">Убрать автоматически вписанные (${scanInfo.auto})</button>` : ''}
@@ -1605,6 +1605,11 @@ async function start() {
   $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/today'));
   try { await tidyPhones(); } catch (e) { console.warn('phones', e); }
   setTimeout(prefetchOcr, 20 * 1000); // распознавание шильдика — скачать заранее, чтобы работало без сети
+  // Распознавание моделей прервали обновлением или закрытием — продолжаем с того же места
+  setTimeout(async () => {
+    const ps = await getMeta('plateScan');
+    if (ps && ps.running && !plateScanRun && (await ocrCloudConf())) { toast('Продолжаю распознавание моделей…', 4000); runPlateScan(); }
+  }, 5000);
   checkUpdateBanner(true);
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);

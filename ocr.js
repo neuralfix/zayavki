@@ -341,16 +341,18 @@ async function scanOldPlates(onProgress, stop) {
   if (!conf) throw new Error('Сначала настройте распознавание Яндекса выше');
   const st = (await getMeta('plateScan')) || {};
   const checked = st.checked || [];
-  const s = { written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0, ...(st.stats || {}), done: 0 };
+  const s = { written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0, done: 0, ...(st.stats || {}) };
   const { list, photos } = await plateScanTargets();
-  s.total = photos;
-  const save = () => setMeta('plateScan', { checked, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel } });
+  s.total = s.done + photos;   // процент — с учётом проверенного в прошлые разы
+  // running: true — если приложение закрыли посреди проверки, при следующем запуске оно продолжит само
+  const save = (running = true) => setMeta('plateScan', { checked, running, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel, done: s.done } });
+  await save();
   onProgress(s);
   for (const item of list) {
     let left = item.photos.length;
     for (const pid of item.photos) {
       while (document.hidden && !stop()) await new Promise((ok) => setTimeout(ok, 5000)); // свернули — пауза
-      if (stop()) { await save(); return { ...s, stopped: true }; }
+      if (stop()) { await save(false); return { ...s, stopped: true }; }
       const p = await dbGet('photos', pid);
       const o = await dbGet('orders', item.id);
       if (!o || (o.model || '').trim()) break;          // модель уже есть — остальные фото этой заявки не нужны
@@ -361,7 +363,7 @@ async function scanOldPlates(onProgress, stop) {
       let text = null;
       for (let tryN = 0; text === null; tryN++) {
         try { text = await cloudOcrText(p.blob, conf); } catch (e) {
-          if (/Неверный ключ/.test(e.message) || tryN >= 3) { await save(); throw e; }
+          if (/Неверный ключ/.test(e.message) || tryN >= 3) { await save(!/Неверный ключ/.test(e.message)); throw e; }
           await new Promise((ok) => setTimeout(ok, 15000));
         }
       }
@@ -382,7 +384,7 @@ async function scanOldPlates(onProgress, stop) {
     s.done += left;   // остальные фото заявки уже не нужны
     onProgress(s);
   }
-  await save();
+  await save(false);
   return s;
 }
 
