@@ -185,10 +185,10 @@ const STATUS_RU = { open: 'В работе', sd: 'На СД', closed: 'Закр�
 
 function ordersCsv(orders) {
   const rows = [['№', 'Создана', 'Статус', 'Закрыта', 'Имя', 'Телефон', 'Адрес', 'Кв.', 'Техника', 'Модель', 'Проблема',
-    'Что сделано', 'Гарантия, дней', 'По гарантии', 'Оплата клиента', 'Расходы (что)', 'Расходы, сумма', 'Чистыми']];
+    'Что сделано', 'Гарантия, дней', 'Тип заявки','Оплата клиента', 'Расходы (что)', 'Расходы, сумма', 'Чистыми']];
   orders.slice().sort((a, b) => a.num - b.num).forEach((o) => rows.push([
     o.num, _d(o.createdAt), STATUS_RU[o.status] || o.status, _d(o.closedAt), o.name, o.phone, o.address, o.apt,
-    o.device, o.model, o.problem, o.workDone, o.warrantyDays || '', o.isWarranty ? 'да' : '',
+    o.device, o.model, o.problem, o.workDone, o.warrantyDays || '', o.isWarranty ? 'Гарантия' : o.isRepeat ? 'Повторная' : 'Новая',
     o.status === 'closed' ? (o.income || 0) : '',
     (o.costs || []).map((c) => (c.name || 'расход') + ' ' + c.amount).join(', '),
     o.status === 'closed' ? orderCosts(o) : '', o.status === 'closed' ? orderNet(o) : '',

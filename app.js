@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.27'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.28'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -188,6 +188,10 @@ const warEndOf = (o) => (o.status === 'closed' && o.warrantyDays && o.closedAt ?
 const onWarranty = (o) => warEndOf(o) >= Date.now();
 // Раздел «Гарантия»: только гарантийные заявки, которые сейчас в работе или на СД. После закрытия — в «Закрытые»
 const inWarrantyTab = (o) => o.isWarranty && isActive(o.status);
+// Тип заявки: новая (клиент из рекламы), повторная (уже были у этого клиента, позвонил сам), по гарантии
+const kindOf = (o) => (o.isWarranty ? 'warranty' : o.isRepeat ? 'repeat' : 'new');
+const KINDS = [['new', 'Новая'], ['repeat', 'Повторная'], ['warranty', 'Гарантия']];
+const kindTag = (o) => (o.isWarranty ? ' <span class="tag-w">гарантия</span>' : o.isRepeat ? ' <span class="tag-r">повтор</span>' : '');
 // «12 дней» / «3 месяца»
 const warrantyText = (o) => o.warrantyMonths ? o.warrantyMonths + ' ' + plural(o.warrantyMonths, 'месяц', 'месяца', 'месяцев')
   : o.warrantyDays ? o.warrantyDays + ' ' + daysWord(o.warrantyDays) : '';
@@ -246,7 +250,7 @@ function drawList(all) {
     else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
     const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
     return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
-      <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
+      <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${kindTag(o)}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
       <div class="row small"><span class="grow">${esc([o.name, shortAddress(o)].filter(Boolean).join(' · ') || o.phone || o.notes || '—')}</span></div>
       <div class="row small muted"><span class="grow">${esc(when)}</span>${sum}</div>
     </a>`;
@@ -270,7 +274,7 @@ function todayItem(o, timeText) {
       ${timeText ? `<b class="t-time">${esc(timeText)}</b>` : ''}
       <div class="t-body">
         <div class="t-addr">${esc(street)}${flat ? ` <span class="t-flat">${esc(flat)}</span>` : ''}
-          ${o.problemClient ? '<span class="tag-bad">⚠</span>' : ''}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}</div>
+          ${o.problemClient ? '<span class="tag-bad">⚠</span>' : ''}${kindTag(o)}</div>
         <div class="t-sub">${esc(sub || '№' + o.num)}</div>
       </div>
     </a>
@@ -331,7 +335,9 @@ async function renderOrderForm(id, warrantyFromId) {
   view.innerHTML = `
     <form id="f" autocomplete="off">
       ${!o && !src ? '<button type="button" class="btn sec" id="pasteOrder" style="margin-bottom:12px">📋 Вставить заявку из сообщения</button>' : ''}
-      <div class="client-hint warn" id="wbanner" ${warrantyOf ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
+      <div class="field"><label>Тип заявки <span class="muted" id="kindNote"></span></label>
+        <div class="chips" id="kind">${KINDS.map(([k, t]) => `<button type="button" class="chip ${kindOf(v) === k ? 'on' : ''}" data-v="${k}">${t}</button>`).join('')}</div></div>
+      <div class="client-hint warn" id="wbanner" ${v.isWarranty ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
       <div class="field"><label>Телефон</label>
         <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
           <button type="button" class="btn sec" id="pastePh">📋 Вставить</button></div>
@@ -365,6 +371,21 @@ async function renderOrderForm(id, warrantyFromId) {
   });
   $('#moreAddr').onclick = () => { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; $('[name=entrance]').focus(); };
 
+  // Тип заявки. У новой: клиент уже был — «Повторная» ставится сама (можно переключить)
+  let kind = kindOf(v);
+  let kindAuto = '';             // '' — выбрано руками или по умолчанию; 'phone' / 'flat' — поставлено само
+  let kindTouched = !!o || !!src; // сохранённую заявку и гарантию сами не переключаем
+  const setKind = (k, auto) => {
+    kind = k; kindAuto = auto || ''; if (!auto) kindTouched = true;
+    $$('#kind .chip').forEach((x) => x.classList.toggle('on', x.dataset.v === k));
+    $('#kindNote').textContent = kindAuto && k === 'repeat' ? '— клиент уже был, отмечено само' : '';
+    if (k !== 'warranty') { warrantyOf = null; $('#wbanner').hidden = true; }
+    else if (!warrantyOf) { $('#wbanner').textContent = 'Заявка по гарантии'; $('#wbanner').hidden = false; }
+  };
+  $$('#kind .chip').forEach((c) => c.onclick = () => setKind(c.dataset.v));
+  const autoRepeat = (why) => { if (!kindTouched && kind === 'new') setKind('repeat', why); };
+  const visited = (x) => x.status === 'closed' || x.status === 'refused';   // мастер у клиента был
+
   // Подсказки адреса: квартиры, где уже были, + справочник улиц
   attachAddressSuggest($('[name=address]'), async () => (await dbAll('orders'))
     .filter((x) => x.address && x.id !== v.id).sort((a, b) => b.createdAt - a.createdAt), (po) => pickFlat(po));
@@ -387,6 +408,8 @@ async function renderOrderForm(id, warrantyFromId) {
   const phoneIn = $('[name=phone]'); const hint = $('#client');
   const showClient = async () => {
     const c = await findClientByPhone(phoneIn.value, v.id);
+    if (c && c.visited) autoRepeat('phone');
+    else if (kindAuto === 'phone') setKind('new', 'none');   // номер исправили — уже не тот клиент
     if (!c) { hint.innerHTML = ''; return; }
     const l = c.last;
     const w = c.warranty;
@@ -406,7 +429,7 @@ async function renderOrderForm(id, warrantyFromId) {
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
     };
     const asw = $('[data-a=asw]', hint); if (asw) asw.onclick = () => {
-      warrantyOf = w.id;
+      warrantyOf = w.id; setKind('warranty');
       $('#wbanner').textContent = 'Заявка по гарантии к №' + w.num; $('#wbanner').hidden = false;
       $('[data-a=fill]', hint).click(); asw.remove();
     };
@@ -449,6 +472,7 @@ async function renderOrderForm(id, warrantyFromId) {
       if (l.phone) phoneIn.value = fmtPhone(l.phone);
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
       if (!$('[name=model]').value && l.model) $('[name=model]').value = l.model;
+      if (same.some(visited)) autoRepeat('flat');
       box.innerHTML = ''; showClient();
     };
     const fw = $('[data-a=flatWar]', box); if (fw) fw.onclick = () => {
@@ -460,7 +484,7 @@ async function renderOrderForm(id, warrantyFromId) {
     };
     const asWarranty = (base) => {
       fillClient(base);
-      warrantyOf = base.id;
+      warrantyOf = base.id; setKind('warranty');
       $('#wbanner').textContent = 'Заявка по гарантии к №' + base.num + (onWarranty(base)
         ? ' (гарантия до ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') + ')'
         : warEndOf(base) ? ' — гарантия кончилась ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') : ' — гарантию не ставили');
@@ -514,7 +538,10 @@ async function renderOrderForm(id, warrantyFromId) {
     const now = Date.now();
     const rec = o ? { ...o } : { id: uid(), num: await nextOrderNum(), createdAt: now, status: 'open', costs: [], income: 0 };
     Object.assign(rec, data, { device, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null, updatedAt: now });
-    if (warrantyOf) { rec.isWarranty = true; rec.warrantyOf = warrantyOf; }
+    if (kind === 'warranty') { rec.isWarranty = true; if (warrantyOf) rec.warrantyOf = warrantyOf; }
+    else { delete rec.isWarranty; delete rec.warrantyOf; }
+    if (kind === 'repeat') rec.isRepeat = true; else delete rec.isRepeat;
+    rec.kindSet = true;   // тип выбран в форме — разметка старых заявок его не трогает
     if (o && o.modelAuto && rec.model !== o.model) delete rec.modelAuto;   // поправили вручную — уже не «авто»
     if (o && o.deviceAuto && rec.device !== o.device) delete rec.deviceAuto;
     await dbPut('orders', rec);
@@ -611,7 +638,7 @@ async function renderOrder(id) {
     </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
-      <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>${o.deviceAuto ? ' <span class="muted small" title="Вид техники вписан автоматически по фото шильдика">· авто</span>' : ''}` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}
+      <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>${o.deviceAuto ? ' <span class="muted small" title="Вид техники вписан автоматически по фото шильдика">· авто</span>' : ''}` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : o.isRepeat ? ' <span class="tag-r">повторный клиент</span>' : ''}
           ${o.model ? `<div class="ord-model">${esc(o.model)}${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}</div>` : ''}</div>
         <span class="badge ${o.status}">${STATUS[o.status]}</span>${icons}</div>
       <dl class="kv">
@@ -1021,8 +1048,14 @@ async function renderReport() {
   const expenses = await dbAll('expenses');
   const key = state.month;
   const s = monthStats(orders, expenses, key);
-  const paid = s.closed.filter((o) => (Number(o.income) || 0) > 0).length;   // закрытые с оплатой 0 ₽ в средний чек не идут
-  const avg = paid ? s.income / paid : 0;
+  // Средний чек — только по новым клиентам (из рекламы). Деньги с гарантий и повторных — сверху, клиентов от них не прибавляется.
+  // Закрытые с оплатой 0 ₽ в средний чек не идут.
+  const by = { new: { n: 0, paid: 0, inc: 0 }, repeat: { n: 0, paid: 0, inc: 0 }, warranty: { n: 0, paid: 0, inc: 0 } };
+  s.closed.forEach((o) => { const k = by[kindOf(o)]; const inc = Number(o.income) || 0; k.n++; k.inc += inc; if (inc > 0) k.paid++; });
+  const avg = by.new.paid ? by.new.inc / by.new.paid : 0;
+  const perClient = by.new.paid ? s.income / by.new.paid : 0;
+  const ads = (s.byCat['Реклама'] || 0) + (s.byCat['Колибри'] || 0);
+  const orDash = (x) => (x ? money(x) : '—');
   const byDev = {};
   s.closed.forEach((o) => { const d = o.device || 'Не указано'; byDev[d] = byDev[d] || { n: 0, net: 0 }; byDev[d].n++; byDev[d].net += orderNet(o); });
   const months = [-5, -4, -3, -2, -1, 0].map((k) => shiftMonth(key, k));
@@ -1079,7 +1112,13 @@ async function renderReport() {
         <span>Отмена</span><span>${s.cancelled}</span>
         ${total ? `<span class="muted">Доля выездов с деньгами</span><span class="muted">${Math.round(s.closed.filter((o) => (Number(o.income) || 0) > 0).length / Math.max(1, s.closed.length + s.refused) * 100)}%</span>` : ''}
         <div class="sep"></div>
-        <span>Средний чек</span><b>${money(avg)}</b>
+        <span>Средний чек <span class="muted">— новые клиенты</span></span><b>${orDash(avg)}</b>
+        <span>С одного нового клиента <span class="muted">— с гарантиями и повторными</span></span><b>${orDash(perClient)}</b>
+        <span class="muted">Новые с оплатой</span><span class="muted">${by.new.paid}${by.new.inc ? ' · ' + money(by.new.inc) : ''}</span>
+        <span class="muted">Повторные</span><span class="muted">${by.repeat.n}${by.repeat.inc ? ' · ' + money(by.repeat.inc) : ''}</span>
+        <span class="muted">Гарантия</span><span class="muted">${by.warranty.n}${by.warranty.inc ? ' · ' + money(by.warranty.inc) : ''}</span>
+        ${ads && by.new.paid ? `<span class="muted">Реклама и Колибри на 1 нового клиента</span><span class="muted">${money(ads / by.new.paid)}</span>` : ''}
+        <div class="sep"></div>
         <span>Сейчас на СД</span><span>${sdNow}</span>
         <span>Сейчас в работе</span><span>${openNow}</span>
         ${Object.keys(byDev).length ? '<div class="sep"></div>' : ''}
@@ -1773,11 +1812,36 @@ async function tidyPhones() {
   return n;
 }
 
+// Старые заявки (до 1.28): если у этого телефона раньше уже был выезд — заявка повторная. Один раз.
+// Заявки, где тип выбран в форме (kindSet), и гарантийные не трогаются.
+async function markOldRepeats() {
+  if (await getMeta('repeatsMarked')) return 0;
+  const all = (await dbAll('orders')).sort((a, b) => a.createdAt - b.createdAt);
+  const firstVisit = new Map();   // телефон → когда мастер у него впервые был
+  let n = 0;
+  for (const o of all) {
+    const tel = digits(o.phone).slice(-10);
+    if (tel.length < 10) continue;
+    const seen = firstVisit.get(tel);
+    if (seen != null && seen < o.createdAt && !o.isWarranty && !o.isRepeat && !o.kindSet) {
+      o.isRepeat = true; await dbPut('orders', o); n++;
+    }
+    if (o.status === 'closed' || o.status === 'refused') {
+      const t = o.closedAt || o.createdAt;
+      if (seen == null || t < seen) firstVisit.set(tel, t);
+    }
+  }
+  await setMeta('repeatsMarked', Date.now());
+  if (n) await markDirty();
+  return n;
+}
+
 async function start() {
   tickClock();
   setInterval(tickClock, 10 * 1000);
   $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/today'));
   try { await tidyPhones(); } catch (e) { console.warn('phones', e); }
+  try { const n = await markOldRepeats(); if (n) setTimeout(() => toast('Старые заявки: отмечено повторных — ' + n, 5000), 1500); } catch (e) { console.warn('repeats', e); }
   setTimeout(prefetchOcr, 20 * 1000); // распознавание шильдика — скачать заранее, чтобы работало без сети
   // Пока печатают (клавиатура открыта), нижние панели убираем, чтобы не закрывали поле
   const typingEl = (el) => el && el.matches && el.matches('textarea, select, input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=button])');

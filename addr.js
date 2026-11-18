@@ -204,6 +204,8 @@ async function findClientByPhone(phone, exceptId) {
     count: orders.length,
     // отмечен как проблемный хоть в одной заявке
     problem: orders.find((o) => o.problemClient) || null,
+    // мастер у этого клиента уже был (ремонт или отказ на месте) — новая заявка от него повторная
+    visited: orders.some((o) => o.status === 'closed' || o.status === 'refused'),
     // последняя закрытая заявка, гарантия по которой ещё идёт
     warranty: orders.find((o) => o.status === 'closed' && o.warrantyDays && o.closedAt + o.warrantyDays * 864e5 >= now) || null,
   };
