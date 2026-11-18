@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.21'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.22'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -113,22 +113,25 @@ async function requestSync() {
 }
 
 // ---------- Значок синхронизации ----------
+// Шапка: компактный значок Диска. То, что требует действия, — отдельной строкой под шапкой.
 async function updateSyncBadge() {
-  const b = $('#syncBadge');
+  const b = $('#syncBadge'); const bar = $('#diskBar');
   const s = await syncStatus();
-  b.className = 'sync';
-  if (!s.connected) { b.textContent = 'Диск не подключён'; b.classList.add('warn'); return; }
-  if (!s.hasKey) { b.textContent = '🔒 Нужен пароль'; b.classList.add('warn'); return; }
   const pending = s.pendingPhotos + (s.dataPending ? 1 : 0) + s.pendingDeletes;
-  if (s.paused) { b.textContent = '⏸ Диск на паузе'; b.classList.add('warn'); return; }
-  if (s.error) { b.textContent = '⚠ Ошибка Диска'; b.classList.add('err'); return; }
-  if (pending) {
-    b.textContent = (navigator.onLine ? '↻ Отправка' : '⏸ Нет сети') + (s.pendingPhotos ? ' · фото ' + s.pendingPhotos : '');
-    if (!navigator.onLine) b.classList.add('warn');
-    return;
-  }
-  b.textContent = '☁ ✓';
-  b.title = s.lastSync ? 'На Диске, последняя отправка ' + fmtDate(s.lastSync) : 'На Диске';
+  let icon = '☁ ✓', cls = '', alert = '';
+  if (!s.connected) { icon = '☁ !'; cls = 'warn'; alert = 'Диск не подключён — копии заявок не сохраняются'; }
+  else if (!s.hasKey) { icon = '🔒'; cls = 'warn'; alert = 'Задайте пароль — без него на Диск ничего не уходит'; }
+  else if (s.paused) { icon = '☁ ⏸'; cls = 'warn'; alert = 'Отправка на Диск на паузе — выберите, какую копию оставить'; }
+  else if (s.error) { icon = '☁ !'; cls = 'err'; alert = 'Ошибка Диска: ' + s.error; }
+  else if (pending) { icon = navigator.onLine ? '☁ ↑' + (s.pendingPhotos || '') : '☁ ⏸'; }
+  b.className = 'sync' + (cls ? ' ' + cls : '');
+  b.textContent = icon;
+  b.title = alert || (pending ? 'Ждут отправки: ' + s.pendingPhotos + ' фото' + (s.dataPending ? ' + данные' : '') : s.lastSync ? 'На Диске, последняя отправка ' + fmtDate(s.lastSync) : 'На Диске');
+  b.setAttribute('aria-label', 'Диск: ' + b.title);
+  // строка-предупреждение не нужна на самой странице «Диск» — там всё подробно
+  bar.hidden = !alert || location.hash.startsWith('#/settings');
+  bar.className = cls === 'err' ? 'err' : '';
+  bar.innerHTML = alert ? `<a href="#/settings">⚠ ${esc(alert)} <b>›</b></a>` : '';
 }
 
 // ---------- Маршруты ----------
@@ -138,6 +141,7 @@ async function route() {
   const [, name, id] = h.split('/');
   setTab(name);
   window.scrollTo(0, 0);
+  updateSyncBadge();
   try {
     switch (name) {
       case 'today': return await renderToday();
@@ -249,19 +253,27 @@ function drawList(all) {
 // ================= СЕГОДНЯ =================
 const hhmm = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 
+const ICON_CALL = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6.6 3.5l2.6-.3 1.6 4-2 1.5a12 12 0 0 0 6.5 6.5l1.5-2 4 1.6-.3 2.6c-.2 1.3-1.3 2.2-2.6 2.1C10.6 19 5 13.4 4.5 6.1c-.1-1.3.8-2.4 2.1-2.6z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
+const ICON_ROUTE = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 2.5l7.5 18-7.5-4-7.5 4z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
+
+// Строка выезда: время и улица с домом — главное; звонок и маршрут — в одно касание справа
 function todayItem(o, timeText) {
   const tel = digits(o.phone);
-  const place = shortAddress(o) || o.name || 'адрес не указан';
-  const sub = [o.device, shortAddress(o) ? o.name : '', o.problem].filter(Boolean).join(' · ');
+  const street = o.address || o.name || 'Адрес не указан';
+  const flat = o.address ? [o.apt ? 'кв. ' + o.apt : '', o.entrance ? 'под. ' + o.entrance : '', o.floor ? 'эт. ' + o.floor : ''].filter(Boolean).join(', ') : '';
+  const sub = [o.device, o.address ? o.name : '', o.problem].filter(Boolean).join(' · ');
   return `<div class="item today-item">
     <a class="t-main" href="#/order/${o.id}">
-      <div class="row">${timeText ? `<b class="t-time">${esc(timeText)}</b>` : ''}<b class="grow">${esc(place)}</b>
-        ${o.problemClient ? '<span class="tag-bad">⚠</span>' : ''}${o.isWarranty ? '<span class="tag-w">гарантия</span>' : ''}</div>
-      <div class="row small muted"><span class="grow">${esc(sub || '№' + o.num)}</span></div>
+      ${timeText ? `<b class="t-time">${esc(timeText)}</b>` : ''}
+      <div class="t-body">
+        <div class="t-addr">${esc(street)}${flat ? ` <span class="t-flat">${esc(flat)}</span>` : ''}
+          ${o.problemClient ? '<span class="tag-bad">⚠</span>' : ''}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}</div>
+        <div class="t-sub">${esc(sub || '№' + o.num)}</div>
+      </div>
     </a>
-    ${tel || o.address ? `<div class="btns">
-      ${tel ? `<a class="btn" href="${esc(telHref(o.phone))}">Позвонить</a>` : '<span></span>'}
-      ${o.address ? `<a class="btn sec" href="${esc(routeHref(o))}">Маршрут</a>` : '<span></span>'}
+    ${tel || o.address ? `<div class="t-act">
+      ${tel ? `<a class="ico" href="${esc(telHref(o.phone))}" aria-label="Позвонить">${ICON_CALL}</a>` : ''}
+      ${o.address ? `<a class="ico" href="${esc(routeHref(o))}" aria-label="Маршрут">${ICON_ROUTE}</a>` : ''}
     </div>` : ''}
   </div>`;
 }
@@ -284,13 +296,13 @@ async function renderToday() {
   const sec = (title, list, t, cls = '') => list.length ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>
     <div class="list">${list.map((o) => todayItem(o, t(o))).join('')}</div>` : '';
   view.innerHTML = `
+    <div class="today-head"><h2 id="todayDate">${esc(todayDateText())}</h2><a class="btn mini" href="#/new">+ Новая заявка</a></div>
+    ${sd ? `<a class="item sd-link${sdOld ? ' late' : ''}" href="#/orders" id="toSd">🔧 На СД: ${sd}${sdOld ? ` <span class="neg">· ⚠ ${sdOld} ${sdOld === 1 ? 'ждёт' : 'ждут'} больше недели</span>` : ''}</a>` : ''}
     ${sec('Просрочено', late, (o) => dayShort(o.visitAt) + ', ' + hhmm(o.visitAt), 'neg')}
     ${sec('На сегодня', today, (o) => hhmm(o.visitAt))}
     ${sec('Без времени', noTime, () => '')}
-    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.<br>Нажмите «+», чтобы добавить.</div>' : ''}
-    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}
-    ${sd ? `<a class="item sd-link${sdOld ? ' late' : ''}" href="#/orders" id="toSd">🔧 На СД: ${sd}${sdOld ? ` <span class="neg">· ⚠ ${sdOld} ${sdOld === 1 ? 'ждёт' : 'ждут'} больше недели</span>` : ''}</a>` : ''}
-    <a class="fab" href="#/new" aria-label="Новая заявка">+</a>`;
+    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.</div>' : ''}
+    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}`;
   const toSd = $('#toSd'); if (toSd) toSd.onclick = () => { state.filter = 'sd'; };
 }
 
@@ -486,9 +498,12 @@ async function renderOrder(id) {
   const net = orderNet(o);
   const parent = o.warrantyOf ? await dbGet('orders', o.warrantyOf) : null;
   let report = '';
+  const sdLineHtml = o.sd ? `<p class="small muted" style="margin:8px 0 0">🔧 был на СД с ${esc(dayShort(o.sd.at))}${o.sd.what ? ' · ' + esc(o.sd.what) : ''}${o.sd.advance ? ' · аванс ' + money(o.sd.advance) : ''}</p>` : '';
+  const warEnd = o.warrantyDays ? o.closedAt + o.warrantyDays * 864e5 : 0;
+  const warActive = warEnd >= Date.now();
   if (o.status === 'closed') {
     report = `<div class="card">
-      <h2>Отчёт · ${esc(fmtDate(o.closedAt, false))}</h2>
+      <div class="row card-head"><h2 class="grow">Отчёт · ${esc(fmtDate(o.closedAt, false))}</h2><a class="link small" href="#/close/${o.id}">Изменить</a></div>
       <div class="stat">
         <span>Взял</span><b>${money(o.income)}</b>
         ${(o.costs || []).map((c) => `<span class="muted">− ${esc(c.name || 'расход')}</span><span class="muted">${money(c.amount)}</span>`).join('')}
@@ -497,62 +512,72 @@ async function renderOrder(id) {
       </div>
       ${o.workDone ? `<p class="small" style="margin:10px 0 0"><span class="muted">Что сделано:</span> ${esc(o.workDone)}</p>` : ''}
       ${o.diagOnly && !/диагност/i.test(o.workDone || '') ? '<p class="small" style="margin:6px 0 0"><span class="tag-w">только диагностика</span></p>' : ''}
-      ${o.warrantyDays ? `<p class="small" style="margin:6px 0 0"><span class="muted">Гарантия:</span> ${warrantyText(o)} — до ${esc(new Date(o.closedAt + o.warrantyDays * 864e5).toLocaleDateString('ru-RU'))}</p>` : ''}
+      ${o.warrantyDays ? `<p class="small" style="margin:6px 0 0"><span class="muted">Гарантия:</span> ${warrantyText(o)} — до ${esc(new Date(warEnd).toLocaleDateString('ru-RU'))}${warActive ? ` · <a class="link" href="#/new/${o.id}">Оформить по гарантии</a>` : ' <span class="muted">(кончилась)</span>'}</p>` : ''}
+      ${sdLineHtml}
     </div>`;
   } else if (o.status === 'refused') {
-    report = `<div class="card"><h2>Отказ · ${esc(fmtDate(o.closedAt, false))}</h2><p class="small" style="margin:0">Приехал, денег не взял${o.sd?.advance ? ', аванс вернул' : ''}.</p></div>`;
+    report = `<div class="card"><h2>Отказ · ${esc(fmtDate(o.closedAt, false))}</h2><p class="small" style="margin:0">Приехал, денег не взял${o.sd?.advance ? ', аванс вернул' : ''}.</p>${sdLineHtml}</div>`;
   } else if (o.status === 'cancelled') {
     report = `<div class="card"><h2>Отмена · ${esc(fmtDate(o.closedAt, false))}</h2><p class="small" style="margin:0">Не приезжал — клиент отменил.</p></div>`;
   }
-  const sdCard = o.sd && (o.status === 'sd' || o.status === 'closed' || o.status === 'refused')
-    ? `<div class="card sd-card"><b>🔧 ${o.status === 'sd' ? 'На СД' : 'Было на СД'}</b> с ${esc(dayShort(o.sd.at))}
+  const sdCard = o.sd && o.status === 'sd'
+    ? `<div class="card sd-card"><b>🔧 На СД</b> с ${esc(dayShort(o.sd.at))}
        ${o.sd.what ? '· ' + esc(o.sd.what) : ''}${o.sd.advance ? ' · аванс ' + money(o.sd.advance) : ''}</div>` : '';
-  let actions;
+  // Главное действие по статусу — сразу под карточкой; редкие — в «Ещё»
+  let main = '', more = '';
   if (o.status === 'open') {
-    actions = `<a class="btn" href="#/close/${o.id}">Закрыть заявку — отчёт</a>
-      <button class="btn sec" data-a="sd">Забрал на СД</button>
-      <div class="btns" style="margin-top:8px"><button class="btn danger" data-a="refuse">Отказ</button><button class="btn danger" data-a="cancel">Отмена</button></div>`;
+    main = `<div class="btns main-act"><a class="btn" href="#/close/${o.id}">Закрыть заявку</a><button class="btn sec" data-a="sd">Забрал на СД</button></div>`;
+    more = `<button class="btn danger" data-a="refuse">Отказ — приехал, денег не взял</button><button class="btn danger" data-a="cancel">Отмена — клиент отменил</button>`;
   } else if (o.status === 'sd') {
-    actions = `<a class="btn" href="#/close/${o.id}">Отремонтировал — закрыть</a>
-      <button class="btn sec" data-a="sd">Изменить: что забрал, аванс</button>
-      <button class="btn danger" data-a="refuse">Отказ — вернул без ремонта</button>`;
+    main = `<div class="main-act"><a class="btn" href="#/close/${o.id}">Отремонтировал — закрыть</a></div>`;
+    more = `<button class="btn sec" data-a="sd">Изменить: что забрал, аванс</button><button class="btn danger" data-a="refuse">Отказ — вернул без ремонта</button>`;
   } else if (o.status === 'closed') {
-    actions = `<a class="btn sec" href="#/close/${o.id}">Изменить отчёт</a>
-      <a class="btn sec" href="#/new/${o.id}">Заявка по гарантии</a>
-      <button class="btn danger" data-a="reopen">Вернуть в работу</button>`;
+    more = `${warActive ? '' : `<a class="btn sec" href="#/new/${o.id}">Заявка по гарантии</a>`}<button class="btn danger" data-a="reopen">Вернуть в работу</button>`;
   } else {
-    actions = `<button class="btn sec" data-a="reopen">Вернуть в работу</button>`;
+    more = `<button class="btn sec" data-a="reopen">Вернуть в работу</button>`;
   }
+  const big = isActive(o.status);   // в работе и на СД — большие «Позвонить» и «Маршрут»; у остальных — значки
+  const icons = !big && (tel || o.address) ? `<div class="ord-icons">
+      ${tel ? `<a class="ico" href="${esc(telHref(o.phone))}" aria-label="Позвонить">${ICON_CALL}</a>` : ''}
+      ${o.address ? `<a class="ico" href="${esc(routeHref(o))}" aria-label="Маршрут">${ICON_ROUTE}</a>` : ''}</div>` : '';
+  const doneWord = { closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' }[o.status];
+  const meta = ['Создана ' + fmtDate(o.createdAt), doneWord && o.closedAt ? doneWord + ' ' + fmtDate(o.closedAt) : ''].filter(Boolean).join(' · ');
   view.innerHTML = `
-    ${tel || o.address ? `<div class="btns" style="margin-bottom:12px">
+    ${big && (tel || o.address) ? `<div class="btns" style="margin-bottom:12px">
       ${tel ? `<a class="btn" href="${esc(telHref(o.phone))}">Позвонить</a>` : '<span></span>'}
       ${o.address ? `<a class="btn sec" href="${esc(routeHref(o))}">Маршрут</a>` : '<span></span>'}
     </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
-      <div class="row" style="margin-bottom:10px"><span class="grow"><b>${esc([o.device, o.model].filter(Boolean).join(' ') || 'Техника не указана')}</b>${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
+      <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}
+          ${o.model ? `<div class="ord-model">${esc(o.model)}${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}</div>` : ''}</div>
+        <span class="badge ${o.status}">${STATUS[o.status]}</span>${icons}</div>
       <dl class="kv">
         ${o.name ? `<dt>Имя</dt><dd>${esc(o.name)}</dd>` : ''}
-        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)}<br><button type="button" class="link small" data-a="copyc">📋 Копировать для контакта</button></dd>` : ''}
+        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)} <button type="button" class="copy-ico" data-a="copyc" aria-label="Копировать для контакта" title="Копировать для контакта">📋</button></dd>` : ''}
         ${o.address ? `<dt>Адрес</dt><dd>${esc(fullAddress(o))}</dd>` : ''}
         ${o.problem ? `<dt>Проблема</dt><dd>${esc(o.problem)}</dd>` : ''}
         ${o.visitAt && isActive(o.status) ? `<dt>Когда</dt><dd>${esc(fmtDate(o.visitAt))}</dd>` : ''}
         ${parent ? `<dt>Гарантия к</dt><dd><a href="#/order/${parent.id}">№${parent.num}</a> от ${esc(fmtDate(parent.closedAt || parent.createdAt, false))}</dd>` : ''}
         ${o.notes ? `<dt>Заметки</dt><dd>${esc(o.notes)}</dd>` : ''}
-        <dt>Создана</dt><dd>${esc(fmtDate(o.createdAt))}</dd>
       </dl>
       <button class="link" data-a="edit">Изменить данные</button>
+      <p class="ord-meta">${esc(meta)}</p>
     </div>
+    ${main}
     ${sdCard}
     ${report}
     <div class="card"><h2>Фото</h2><div id="photos"></div></div>
-    ${actions}
-    ${o.tgText ? `<details class="card tg"><summary>Исходное сообщение из Telegram</summary><pre>${esc(o.tgText)}</pre></details>` : ''}
-    <button class="btn danger" data-a="bad">${o.problemClient ? 'Снять отметку «проблемный клиент»' : '⚠ Отметить: проблемный клиент'}</button>
-    <button class="btn danger" data-a="del">Удалить заявку</button>`;
+    <details class="card fold more-act"><summary><h2>Ещё</h2></summary>
+      ${more}
+      ${o.tgText ? `<details class="tg"><summary>Исходное сообщение из Telegram</summary><pre>${esc(o.tgText)}</pre></details>` : ''}
+      <button class="btn danger" data-a="bad">${o.problemClient ? 'Снять отметку «проблемный клиент»' : '⚠ Отметить: проблемный клиент'}</button>
+      <button class="btn danger" data-a="del">Удалить заявку</button>
+    </details>`;
   await photoWidget(o, $('#photos'));
   const save = async (patch) => { Object.assign(o, patch, { updatedAt: Date.now() }); await dbPut('orders', o); changed(); renderOrder(id); };
   $('[data-a=edit]').onclick = () => go('#/edit/' + o.id);
+  const e2 = $('[data-a=edit2]'); if (e2) e2.onclick = () => go('#/edit/' + o.id);
   const cc = $('[data-a=copyc]'); if (cc) cc.onclick = async () => {
     const t = contactLabel(o);
     if (await copyText(t)) toast('Скопировано: ' + t + ' · Сохраняйте контакт в «Телефон», не в Google', 5000);
@@ -616,9 +641,9 @@ async function photoWidget(o, box) {
   box.innerHTML = `
     ${photos.length ? `<div class="photos">${tiles}</div>` : '<div class="note">Фото пока нет</div>'}
     <div class="add-ph">
-      <label>📷 Снять<span class="muted small">камера</span><input type="file" accept="image/*" capture="environment"></label>
-      <label>🖼 Галерея<span class="muted small">можно несколько</span><input type="file" accept="image/*" multiple></label>
-      <label>📁 Папки<span class="muted small">если галерея не грузит</span><input type="file" multiple></label></div>
+      <label>📷 Снять<input type="file" accept="image/*" capture="environment"></label>
+      <label>🖼 Галерея<input type="file" accept="image/*" multiple></label>
+      <label title="Если галерея не грузит">📁 Папки<input type="file" multiple></label></div>
     ${photos.some((p) => !p.uploaded && p.blob) ? '<div class="note" style="margin-top:6px">↑ — ещё не отправлено на Диск</div>' : ''}`;
   $$('input[type=file]', box).forEach((inp) => inp.onchange = async () => {
     // из «Папок» можно выбрать что угодно — берём только картинки
@@ -762,7 +787,8 @@ async function renderClose(id) {
         <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(o.closedAt || Date.now())}"></div>
       </div>
       <div class="card"><h2>Фото</h2><div id="photos"></div></div>
-      <button class="btn" type="submit">${wasClosed ? 'Сохранить отчёт' : 'Закрыть заявку'}</button>
+      <div class="close-bar"><div class="cb-sum" id="netBar"></div>
+        <button class="btn" type="submit">${wasClosed ? 'Сохранить отчёт' : 'Закрыть заявку'}</button></div>
     </form>`;
   const box = $('#costs');
   const addRow = (c = { name: '', amount: '' }, focus) => {
@@ -786,6 +812,9 @@ async function renderClose(id) {
     $('#total').innerHTML = `<span>Взял</span><span>${money(inc)}</span>
       <span>Расходы</span><span>− ${money(cs)}</span>
       <span class="sum">Чистыми</span><span class="sum ${net >= 0 ? 'pos' : 'neg'}">${money(net)}</span>`;
+    // итог рядом с кнопкой — сумма и действие видны вместе
+    $('#netBar').innerHTML = `<span class="muted small">Чистыми</span><b class="${net >= 0 ? 'pos' : 'neg'}">${money(net)}</b>
+      <span class="muted small">${money(inc)}${cs ? ' − ' + money(cs) : ''}</span>`;
   };
   costs.forEach((c) => addRow(c));
   $('#addCost').onclick = () => addRow({ name: '', amount: '' }, true);
@@ -1703,10 +1732,11 @@ async function checkUpdateBanner(force) {
 }
 
 // Дата и время в шапке: «вт 17.11 · 14:35»
+const todayDateText = () => { const t = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }); return t[0].toUpperCase() + t.slice(1); };
 function tickClock() {
   const d = new Date();
-  $('#clock').textContent = d.toLocaleDateString('ru-RU', { weekday: 'short' }) + ' ' +
-    String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + ' · ' + hhmm(d);
+  $('#clock').textContent = hhmm(d);
+  const td = $('#todayDate'); if (td) td.textContent = todayDateText();
 }
 
 // Номера в старых заявках (и после восстановления копии) — к виду +7 (965) 932-45-76

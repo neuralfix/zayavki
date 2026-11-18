@@ -59,8 +59,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sync.warn { background: #f0b84f; color: #2b1d00; }
 .sync.err { background: #ff8a80; color: #3b0400; }
 .clock { flex: none; font-size: 14px; opacity: .92; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.top-r { flex: 0 1 auto; min-width: 0; max-width: 34%; display: flex; justify-content: flex-end; }
-.top-r .sync { overflow: hidden; text-overflow: ellipsis; }
+.top-r { flex: none; display: flex; justify-content: flex-end; }
+.top-r .sync { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
+/* Предупреждение Диска — отдельной строкой под шапкой */
+#diskBar { position: sticky; top: calc(env(safe-area-inset-top) + 52px); z-index: 9; background: #f0b84f; }
+#diskBar.err { background: #ff8a80; }
+#diskBar a { display: block; padding: 8px 16px; color: #2b1d00; text-decoration: none; font-size: 14px; font-weight: 600; }
 
 /* Телефон с кнопкой «Вставить» */
 .phone-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
@@ -70,13 +74,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sec-h { font-size: 15px; margin: 14px 2px 8px; font-weight: 650; }
 .sec-h:first-child { margin-top: 2px; }
 .sec-h.neg .muted { color: inherit; }
-.today-item { padding: 0; overflow: hidden; }
-.today-item .t-main { display: block; padding: 12px 14px 10px; color: inherit; text-decoration: none; }
+/* Сегодня: время и улица — главное, звонок и маршрут — значками справа */
+.today-head { display: flex; align-items: center; gap: 10px; margin: 2px 2px 10px; }
+.today-head h2 { flex: 1; margin: 0; font-size: 18px; font-weight: 650; }
+.item.today-item { padding: 0; overflow: hidden; display: flex; align-items: stretch; }
+.today-item .t-main { flex: 1; min-width: 0; display: flex; gap: 12px; align-items: flex-start; padding: 12px 6px 12px 14px; color: inherit; text-decoration: none; }
 .today-item .t-main:active { background: var(--accent-2); }
-.today-item .t-time { font-size: 18px; color: var(--accent); white-space: nowrap; }
-.today-item .btns { padding: 0 10px 10px; }
-.today-item .btns .btn { padding: 11px; }
-.sd-link { margin-top: 14px; font-weight: 600; }
+.today-item .t-time { flex: none; font-size: 20px; line-height: 1.2; color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.today-item .t-body { min-width: 0; }
+.today-item .t-addr { font-size: 17px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+.today-item .t-flat { font-size: 14px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+.today-item .t-sub { margin-top: 3px; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.today-item .t-act { flex: none; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 8px 10px 8px 0; }
+.ico { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: var(--accent-2); color: var(--accent); }
+.ico:active { filter: brightness(.92); }
+.sd-link { margin: 0 0 12px; }
+.sd-link { font-weight: 600; }
 
 /* Заголовок карточки с кнопкой справа */
 .card-head { align-items: center; margin-bottom: 8px; }
@@ -205,7 +218,7 @@ textarea.input { min-height: 72px; resize: vertical; }
 .ph .up { position: absolute; right: 4px; top: 4px; font-size: 11px; background: rgba(0,0,0,.6); color: #fff; padding: 0 5px; border-radius: 6px; }
 .ph.remote { display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); text-align: center; padding: 4px; }
 .add-ph { display: flex; gap: 8px; margin-top: 8px; }
-.add-ph label { flex: 1; text-align: center; padding: 11px 8px; border-radius: 10px; background: var(--accent-2); color: var(--accent); font-weight: 600; font-size: 14px; }
+.add-ph label { flex: 1; text-align: center; padding: 9px 6px; border-radius: 10px; background: var(--accent-2); color: var(--accent); font-weight: 600; font-size: 14px; }
 .add-ph input { display: none; }
 
 #viewer {
@@ -316,3 +329,32 @@ details.fold[open] > summary { margin-bottom: 10px; }
 
 /* СД: деталь ждёт дольше недели */
 .item.late { border-left: 4px solid var(--neg, #e5534b); }
+
+/* Карточка заявки: модель переносится целиком; главное действие — сразу под карточкой */
+.ord-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+.ord-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ord-title > b { font-size: 17px; }
+.ord-model { font-weight: 650; margin-top: 2px; overflow-wrap: anywhere; }
+.ord-head .badge { flex: none; margin-top: 2px; }
+.main-act { margin: 0 0 12px; }
+.main-act .btn { margin: 0; }
+.more-act .btn { margin-top: 8px; }
+.more-act .btn:first-of-type { margin-top: 0; }
+
+/* Закрытие: итог и кнопка вместе, прилипают к низу экрана */
+.close-bar { position: sticky; bottom: calc(var(--tabs-h) + env(safe-area-inset-bottom) + 8px); z-index: 5; display: flex; align-items: center; gap: 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 10px 10px 14px; box-shadow: 0 4px 18px rgba(0,0,0,.18); }
+.close-bar .cb-sum { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.close-bar .cb-sum b { font-size: 20px; }
+.close-bar .btn { flex: 1; margin: 0; }
+
+/* Тёмная тема: на голубом — тёмный текст (контраст ~8:1 вместо ~2:1) */
+@media (prefers-color-scheme: dark) { .seg button.on, .chip.on { color: #062228; } }
+
+/* Закрытая заявка: значки звонка и маршрута в заголовке, справка мелко внизу */
+.ord-icons { display: flex; gap: 6px; flex: none; }
+.ord-icons .ico { width: 40px; height: 40px; }
+.ord-head { align-items: center; }
+.copy-ico { border: 0; background: none; font-size: 17px; padding: 0 4px; vertical-align: -1px; cursor: pointer; }
+.ord-meta { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.more-act details.tg { margin-top: 10px; }
