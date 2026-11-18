@@ -69,10 +69,23 @@ function uid() {
     : Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
-async function nextOrderNum() {
-  const n = (await getMeta('nextNum')) || 1;
-  await setMeta('nextNum', n + 1);
-  return n;
+// Новая заявка: номер выдаётся и заявка записывается одной операцией — два быстрых нажатия не дадут один номер дважды
+async function dbCreateOrder(rec) {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(['orders', 'meta'], 'readwrite');
+    const m = t.objectStore('meta');
+    const g = m.get('nextNum');
+    g.onsuccess = () => {
+      const n = g.result || 1;
+      rec.num = n;
+      m.put(n + 1, 'nextNum');
+      t.objectStore('orders').put(rec);
+    };
+    t.oncomplete = () => resolve(rec);
+    t.onerror = () => reject(t.error || new Error('Не удалось сохранить заявку'));
+    t.onabort = () => reject(t.error || new Error('Заявка не сохранилась'));
+  });
 }
 
 // Отметка «данные изменились, надо отправить на Диск».

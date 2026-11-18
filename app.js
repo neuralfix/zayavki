@@ -19,8 +19,9 @@ function fmtPhone(s) {
   if (d.length !== 10) return raw;
   return '+7 (' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6, 8) + '-' + d.slice(8);
 }
-// Номер не начинается с пробела: иначе в «кв 12, 89005551234» бралось « 8900555123» без последней цифры
-const PHONE_RE = /(?<!\d)(?:(?:\+7|8)[\s(-]*|\(?)\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/;
+// Номер не начинается с пробела: иначе в «кв 12, 89005551234» бралось « 8900555123» без последней цифры.
+// \b вместо «не после цифры» (?<!\d): тот синтаксис старые iPhone (iOS до 16.4) не понимают, и приложение бы не открылось.
+const PHONE_RE = /(?:\+7[\s(-]*|\b8[\s(-]*|\(|\b)\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/;
 const telHref = (phone) => 'tel:' + String(phone).replace(/[^\d+]/g, '');
 
 // Строка для имени контакта в телефонной книге: «ХК Ленина 12-34 Иван 11.11.26»
@@ -50,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.33'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.34'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -91,7 +92,7 @@ function toast(msg, ms = 2600) {
 function setTitle(t, back) {
   $('#title').textContent = t;
   $('#backBtn').hidden = !back;
-  $('#topSave').hidden = true; $('#clock').hidden = false;   // кнопку «Создать» в шапке показывает только форма заявки
+  $('#topSave').hidden = true; $('.top-r').hidden = false;   // кнопку «Создать» в шапке показывает только форма заявки
   document.title = t + ' — Мои заявки';
 }
 function setTab(name) {
@@ -371,7 +372,8 @@ async function renderOrderForm(id, warrantyFromId) {
     </form>`;
   // «Создать» / «Сохранить» — ещё и в шапке: она всегда видна, листать вниз во время разговора не нужно
   const ts = $('#topSave');
-  ts.textContent = o ? 'Сохранить' : 'Создать'; ts.hidden = false; $('#clock').hidden = true;
+  // дата и время остаются; на время формы прячем значок Диска — иначе кнопка не помещается
+  ts.textContent = o ? 'Сохранить' : 'Создать'; ts.hidden = false; ts.disabled = false; $('.top-r').hidden = true;
   ts.onclick = () => $('#f').requestSubmit();
   let device = v.device || '';
   $$('#dev .chip').forEach((c) => c.onclick = () => {
@@ -437,10 +439,14 @@ async function renderOrderForm(id, warrantyFromId) {
       if (l.entrance || l.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
     };
+    // Гарантия — адрес, имя и техника из того самого ремонта, а не из последней заявки этого номера
     const asw = $('[data-a=asw]', hint); if (asw) asw.onclick = () => {
       warrantyOf = w.id; setKind('warranty');
       $('#wbanner').textContent = 'Заявка по гарантии к №' + w.num; $('#wbanner').hidden = false;
-      $('[data-a=fill]', hint).click(); asw.remove();
+      for (const k of ['name', 'address', 'apt', 'entrance', 'floor', 'model']) $('[name=' + k + ']').value = w[k] || '';
+      if (w.entrance || w.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
+      if (w.device && device !== w.device) $$('#dev .chip').find((x) => x.dataset.v === w.device)?.click();
+      asw.remove();
     };
   };
   phoneIn.addEventListener('input', showClient);
@@ -538,14 +544,22 @@ async function renderOrderForm(id, warrantyFromId) {
   };
 
   if (!o && !src) phoneIn.focus();
+  // Пока заявка записывается, обе кнопки («Создать» в шапке и внизу) не работают — второе нажатие не создаст вторую заявку
+  let saving = false;
+  const lockSave = (on) => { saving = on; $('#topSave').disabled = on; const b = $('#f [type=submit]'); if (b) b.disabled = on; };
   $('#f').onsubmit = async (e) => {
     e.preventDefault();
+    if (saving) return;
     const fd = new FormData(e.target);
     const data = Object.fromEntries([...fd.entries()].map(([k, val]) => [k, String(val).trim()]));
     data.phone = fmtPhone(data.phone);
     if (!data.phone && !data.name && !data.address && !data.notes && !data.problem) { toast('Заполните хотя бы одно поле'); return; }
+    lockSave(true);
+    try { await saveForm(data); } catch (err) { toast('Не сохранилось: ' + err.message, 5000); lockSave(false); }
+  };
+  async function saveForm(data) {
     const now = Date.now();
-    const rec = o ? { ...o } : { id: uid(), num: await nextOrderNum(), createdAt: now, status: 'open', costs: [], income: 0 };
+    const rec = o ? { ...o } : { id: uid(), createdAt: now, status: 'open', costs: [], income: 0 };
     Object.assign(rec, data, { device, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null, updatedAt: now });
     if (kind === 'warranty') { rec.isWarranty = true; if (warrantyOf) rec.warrantyOf = warrantyOf; }
     else { delete rec.isWarranty; delete rec.warrantyOf; }
@@ -553,11 +567,11 @@ async function renderOrderForm(id, warrantyFromId) {
     rec.kindSet = true;   // тип выбран в форме — разметка старых заявок его не трогает
     if (o && o.modelAuto && rec.model !== o.model) delete rec.modelAuto;   // поправили вручную — уже не «авто»
     if (o && o.deviceAuto && rec.device !== o.device) delete rec.deviceAuto;
-    await dbPut('orders', rec);
+    if (o) await dbPut('orders', rec); else await dbCreateOrder(rec);   // новой — номер и запись одной операцией
     toast(o ? 'Сохранено' : 'Заявка №' + rec.num + ' создана');
     changed();
     go('#/order/' + rec.id, true);
-  };
+  }
 }
 
 // Небольшое окно с полями (для «Забрал на СД» и отметки клиента)

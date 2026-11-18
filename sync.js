@@ -360,8 +360,11 @@ async function restoreDump(d, fromDisk) {
     .concat(local.filter((p) => !inDump.has(p.id)));
   const maxNum = d.orders.reduce((m, o) => Math.max(m, o.num || 0), 0);
   const v = ((await getMeta('dataVersion')) || 0) + 1;
-  const meta = { nextNum: Math.max(d.nextNum || 1, maxNum + 1), dataVersion: v };
+  // repeatsMarked сбрасываем: в старой копии (до 1.28) повторные заявки ещё не отмечены
+  const meta = { nextNum: Math.max(d.nextNum || 1, maxNum + 1), dataVersion: v, repeatsMarked: null };
   if (fromDisk) meta.syncedVersion = v;
   // 3. Заменяем одной операцией
   await dbReplaceAll({ orders: d.orders, expenses, photos: allPhotos }, meta);
+  // 4. Разметить повторные заявки, если копия старая (в приложении; в фоновой части этой функции нет)
+  if (typeof markOldRepeats === 'function') { try { await markOldRepeats(); } catch (e) { console.warn('repeats', e); } }
 }

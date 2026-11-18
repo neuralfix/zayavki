@@ -64,11 +64,16 @@ function parseWhen(line, now = new Date()) {
 function parseSplitAddress(addr) {
   let apt = '', entrance = '', floor = '';
   const parts = [];
+  // «эт. 5» (подпись перед числом) важнее «5 эт.»: иначе в «кв. 34 под. 2 эт. 5» этажом станет 2, подъездом 34.
+  // Число после подписи не берём, если за ним своя подпись: в «2 под. 5 эт.» пятёрка — этаж, а не подъезд.
+  const NEXT = '(?!\\s*(?:эт|под|п(?![а-яё])|кв))';
+  const cut = (p, m) => p.replace(m[0], ' ').replace(/\s+/g, ' ').trim().replace(/^[,.\s]+|[,.\s]+$/g, '');
+  const num = (m) => m.slice(1).find((x) => /^\d+$/.test(x || ''));
   for (let p of addr.split(',').map((x) => x.trim()).filter(Boolean)) {
     let m;
-    if (!floor && (m = p.match(/(\d+)\s*эт\.?(аж)?/i) || p.match(/эт(аж)?\.?\s*(\d+)/i))) { floor = (m.slice(1).find((x) => /^\d+$/.test(x || ''))); p = p.replace(m[0], '').trim().replace(/^[,.\s]+|[,.\s]+$/g, ''); }
-    if (!entrance && (m = p.match(/(\d+)\s*(под(ъезд)?|п)\.?(?![а-яё])/i) || p.match(/под(ъезд)?\.?\s*(\d+)/i))) { entrance = (m.slice(1).find((x) => /^\d+$/.test(x || ''))); p = p.replace(m[0], '').trim().replace(/^[,.\s]+|[,.\s]+$/g, ''); }
-    if (!apt && (m = p.match(/кв(артира)?\.?\s*(\d+[а-я]?)/i))) { apt = m[2]; p = p.replace(m[0], '').trim().replace(/^[,.\s]+|[,.\s]+$/g, ''); }
+    if (!apt && (m = p.match(/кв(артира)?\.?\s*(\d+[а-я]?)/i))) { apt = m[2]; p = cut(p, m); }
+    if (!floor && (m = p.match(new RegExp('(^|[^а-яё])эт(аж)?\\.?\\s*(\\d+)' + NEXT, 'i')) || p.match(/(\d+)\s*эт\.?(аж)?/i))) { floor = num(m); p = cut(p, m); }
+    if (!entrance && (m = p.match(new RegExp('(^|[^а-яё])под(ъезд)?\\.?\\s*(\\d+)' + NEXT, 'i')) || p.match(/(\d+)\s*(под(ъезд)?|п)\.?(?![а-яё])/i))) { entrance = num(m); p = cut(p, m); }
     if (!apt && (m = p.match(/^(.*?\d+[а-яА-Я]?(?:\/\d+[а-яА-Я]?)?(?:\s*к\.?\s*\d+)?)\s*-\s*(\d+[а-яА-Я]?)$/))) { p = m[1].trim(); apt = m[2]; }
     if (p) parts.push(p);
   }

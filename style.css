@@ -70,7 +70,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .top-save { flex: none; border: 0; border-radius: 12px; padding: 9px 14px; font: inherit; font-size: 15px; font-weight: 650;
   background: #fff; color: #0f5c6e; cursor: pointer; }
 .top-save:active { filter: brightness(.9); }
-.top-save[hidden], .clock[hidden] { display: none; }
+.top-save:disabled { opacity: .6; }
+.top-save[hidden], .top-r[hidden] { display: none; }
 @media (prefers-color-scheme: dark) { .top-save { background: #5cc3d6; color: #062228; } }
 .top-r { flex: none; display: flex; justify-content: flex-end; }
 .top-r .sync { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
