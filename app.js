@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.24'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.25'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -183,6 +183,11 @@ function routeHref(o) {
 }
 const plural = (n, one, few, many) => n % 10 === 1 && n % 100 !== 11 ? one : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
 const daysWord = (n) => plural(n, 'день', 'дня', 'дней');
+// Гарантия: до какого дня и идёт ли сейчас (только у закрытых с ремонтом)
+const warEndOf = (o) => (o.status === 'closed' && o.warrantyDays && o.closedAt ? o.closedAt + o.warrantyDays * 864e5 : 0);
+const onWarranty = (o) => warEndOf(o) >= Date.now();
+// Раздел «Гарантия»: гарантийные вызовы, которые сейчас в работе или на СД, и все закрытые, у которых гарантия ещё идёт
+const inWarrantyTab = (o) => (o.isWarranty && isActive(o.status)) || onWarranty(o);
 // «12 дней» / «3 месяца»
 const warrantyText = (o) => o.warrantyMonths ? o.warrantyMonths + ' ' + plural(o.warrantyMonths, 'месяц', 'месяца', 'месяцев')
   : o.warrantyDays ? o.warrantyDays + ' ' + daysWord(o.warrantyDays) : '';
@@ -203,14 +208,12 @@ function matches(o, q) {
 async function renderOrders() {
   setTitle('Заявки');
   const all = await dbAll('orders');
-  const cnt = { open: 0, sd: 0, closed: 0 };
-  all.forEach((o) => { if (o.status === 'open') cnt.open++; else if (o.status === 'sd') cnt.sd++; else cnt.closed++; });
+  const cnt = { open: 0, sd: 0, closed: 0, war: 0 };
+  all.forEach((o) => { if (o.status === 'open') cnt.open++; else if (o.status === 'sd') cnt.sd++; else cnt.closed++; if (inWarrantyTab(o)) cnt.war++; });
   view.innerHTML = `
-    <div class="seg">
-      <button data-f="all" class="${state.filter === 'all' ? 'on' : ''}">Все</button>
-      <button data-f="open" class="${state.filter === 'open' ? 'on' : ''}">В работе ${cnt.open}</button>
-      <button data-f="sd" class="${state.filter === 'sd' ? 'on' : ''}">На СД ${cnt.sd}</button>
-      <button data-f="closed" class="${state.filter === 'closed' ? 'on' : ''}">Закрытые</button>
+    <div class="seg ofilter">
+      ${[['all', 'Все', all.length], ['open', 'В работе', cnt.open], ['sd', 'На СД', cnt.sd], ['closed', 'Закрытые', cnt.closed], ['war', 'Гарантия', cnt.war]]
+        .map(([f, t, n]) => `<button data-f="${f}" class="${state.filter === f ? 'on' : ''}">${t}<i>${n}</i></button>`).join('')}
     </div>
     <input class="search" type="search" placeholder="Поиск: имя, телефон, адрес, №" value="${esc(state.search)}">
     <div class="list" id="list"></div>
@@ -223,7 +226,7 @@ async function renderOrders() {
 function drawList(all) {
   const q = state.search.trim().toLowerCase();
   const f = state.filter;
-  let list = all.filter((o) => (f === 'all' || (f === 'closed' ? !isActive(o.status) : o.status === f)) && matches(o, q));
+  let list = all.filter((o) => (f === 'all' || (f === 'war' ? inWarrantyTab(o) : f === 'closed' ? !isActive(o.status) : o.status === f)) && matches(o, q));
   // В работе: сначала с назначенным временем (по порядку), потом без времени — новые сверху.
   // На СД: давние сверху. Закрытые, отказы, отмены: свежие сверху. «Все» — в таком же порядке группами.
   const rank = (o) => (o.status === 'open' ? 0 : o.status === 'sd' ? 1 : 2);
@@ -233,7 +236,7 @@ function drawList(all) {
       : (b.closedAt || b.createdAt) - (a.closedAt || a.createdAt)));
   const el = $('#list');
   if (!list.length) {
-    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
+    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'war' ? 'Сейчас ни одной заявки на гарантии.<br>Гарантия ставится при закрытии заявки.' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
     return;
   }
   el.innerHTML = list.map((o) => {
@@ -241,6 +244,10 @@ function drawList(all) {
     if (o.status === 'open') when = o.visitAt ? '🕑 ' + fmtDate(o.visitAt) : 'создана ' + fmtDate(o.createdAt);
     else if (o.status === 'sd') when = '🔧 ' + sdLine(o) + (sdLate(o) ? ' · ⚠ ждёт ' + sdDays(o) + ' ' + daysWord(sdDays(o)) : '');
     else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
+    if (f === 'war' && onWarranty(o)) {   // в разделе «Гарантия» — до какого дня и сколько осталось
+      const left = Math.round((new Date(warEndOf(o)).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 864e5);   // по календарю
+      when = '🛡 гарантия до ' + dayShort(warEndOf(o)) + (left > 0 ? ', ещё ' + left + ' ' + daysWord(left) : ', последний день');
+    }
     const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
     return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
       <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
@@ -338,6 +345,7 @@ async function renderOrderForm(id, warrantyFromId) {
         <div class="field"><label>Улица, дом</label><input class="input" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
         <div class="field"><label>Кв.</label><input class="input" name="apt" value="${esc(v.apt)}" inputmode="numeric"></div>
       </div>
+      <div id="addrHint"></div>
       <button type="button" class="link small" id="moreAddr" ${v.entrance || v.floor ? 'hidden' : ''}>+ подъезд, этаж</button>
       <div class="addr-row two" id="addrMore" ${v.entrance || v.floor ? '' : 'hidden'}>
         <div class="field"><label>Подъезд</label><input class="input" name="entrance" value="${esc(v.entrance)}" inputmode="numeric"></div>
@@ -361,9 +369,9 @@ async function renderOrderForm(id, warrantyFromId) {
   });
   $('#moreAddr').onclick = () => { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; $('[name=entrance]').focus(); };
 
-  // Подсказки адреса: свои прошлые адреса + справочник улиц
+  // Подсказки адреса: квартиры, где уже были, + справочник улиц
   attachAddressSuggest($('[name=address]'), async () => (await dbAll('orders'))
-    .filter((x) => x.address && x.id !== v.id).sort((a, b) => b.createdAt - a.createdAt).map((x) => x.address));
+    .filter((x) => x.address && x.id !== v.id).sort((a, b) => b.createdAt - a.createdAt), (po) => pickFlat(po));
 
   // Пересечения по времени
   const visitIn = $('[name=visitAt]');
@@ -409,6 +417,46 @@ async function renderOrderForm(id, warrantyFromId) {
   };
   phoneIn.addEventListener('input', showClient);
   if (src) showClient();
+
+  // Выбрали квартиру, где уже были: адрес подставлен, ниже — кто там был; вбить как новую или как гарантию
+  const setAddrMore = () => { if ($('[name=entrance]').value || $('[name=floor]').value) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; } };
+  async function pickFlat(po) {
+    const same = (await dbAll('orders')).filter((x) => x.id !== v.id && _norm(x.address) === _norm(po.address) && _norm(x.apt) === _norm(po.apt))
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const l = same[0] || po;
+    for (const k of ['apt', 'entrance', 'floor']) $('[name=' + k + ']').value = l[k] || '';
+    setAddrMore();
+    const w = same.find(onWarranty);
+    const lastRepair = same.find((x) => x.status === 'closed');
+    const box = $('#addrHint');
+    box.innerHTML = `<div class="client-hint${w ? ' warn' : ''}">
+      <b>${l.apt ? 'Кв. ' + esc(l.apt) + ' — ' : ''}здесь уже были</b>${same.length > 1 ? ' (заявок: ' + same.length + ')' : ''}:
+      ${esc([l.name || 'без имени', l.phone].filter(Boolean).join(', '))}
+      <span class="muted">· №${l.num}, ${esc(fmtDate(l.createdAt, false))}${l.device ? ', ' + esc(l.device.toLowerCase()) : ''}${l.model ? ' ' + esc(l.model) : ''} — ${esc(STATUS[l.status].toLowerCase())}</span>
+      ${w ? `<br><b>На гарантии до ${esc(new Date(warEndOf(w)).toLocaleDateString('ru-RU'))}</b> — №${w.num}${w.workDone ? ': ' + esc(w.workDone) : ''}` : ''}
+      <div class="btns" style="margin-top:8px"><button type="button" class="btn sec" data-a="flatNew">Новая заявка</button>
+        ${lastRepair && !warrantyOf ? `<button type="button" class="btn sec" data-a="flatWar">Как гарантия</button>` : ''}</div></div>`;
+    const fillClient = () => {
+      if (l.name) $('[name=name]').value = l.name;
+      if (l.phone) phoneIn.value = fmtPhone(l.phone);
+      if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
+      if (!$('[name=model]').value && l.model) $('[name=model]').value = l.model;
+    };
+    $('[data-a=flatNew]', box).onclick = () => { fillClient(); box.innerHTML = ''; showClient(); };
+    const fw = $('[data-a=flatWar]', box); if (fw) fw.onclick = () => {
+      const base = w || lastRepair;
+      fillClient();
+      if (base.device && device !== base.device) $$('#dev .chip').find((x) => x.dataset.v === base.device)?.click();
+      if (base.model) $('[name=model]').value = base.model;
+      warrantyOf = base.id;
+      $('#wbanner').textContent = 'Заявка по гарантии к №' + base.num + (onWarranty(base)
+        ? ' (гарантия до ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') + ')'
+        : warEndOf(base) ? ' — гарантия кончилась ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') : ' — гарантию не ставили');
+      $('#wbanner').hidden = false;
+      box.innerHTML = ''; showClient();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+  }
   // Вставили или дописали — приводим к виду +7 (965) 932-45-76
   const tidyPhone = () => { const f = fmtPhone(phoneIn.value); if (f !== phoneIn.value) { phoneIn.value = f; showClient(); } };
   phoneIn.addEventListener('paste', () => setTimeout(tidyPhone, 0));
@@ -673,7 +721,6 @@ async function photoWidget(o, box) {
 
 // Добавили фото, а модели или вида техники нет — ищем шильдик сами, в фоне. Записанное видно сразу.
 function autoPlateAfterAdd(orderId, ids) {
-  if (plateScanRun) return;   // идёт «Распознать все» — оно само дойдёт
   let said = false;
   autoPlateOnAdd(orderId, ids, (t) => { if (!said) { said = true; toast(t, 2500); } }).then((got) => {
     if (!got) return;
@@ -1143,60 +1190,6 @@ async function sendAll() {
   if (location.hash.startsWith('#/settings')) renderSettings();
 }
 
-// Импорт из Telegram: какие снимки ещё не добавлены. Снимок помнит имя файла (tgName); у добавленных
-// до версии 1.21 имени нет — такие заявки считаем уже с фото, чтобы не задвоить.
-async function tgRebuildPhotoMap(photoMap) {
-  const map = (await getMeta('tgPhotoMap')) || {};
-  const ids = new Set((await dbAll('orders')).map((o) => o.id));
-  const photos = (await dbAll('photos')).filter((p) => p.from === 'telegram');
-  const added = new Set(photos.filter((p) => p.tgName).map((p) => p.orderId + '|' + p.tgName));
-  const legacy = new Set(photos.filter((p) => !p.tgName).map((p) => p.orderId));
-  // значение — id заявки или список id (один снимок отправлен к двум заявкам)
-  for (const [name, v] of Object.entries(photoMap || {})) {
-    const list = (Array.isArray(v) ? v : [v]).filter((oid) => ids.has(oid) && !legacy.has(oid) && !added.has(oid + '|' + name));
-    if (list.length) map[name] = list; else delete map[name];
-  }
-  await setMeta('tgPhotoMap', map);
-  return Object.keys(map).length;
-}
-
-// ---------- Модели в старых заявках: пачкой ----------
-let plateScanRun = null;   // идёт проверка — здесь цифры
-
-function scanProgHtml(s) {
-  const pct = s.total ? Math.floor(s.done * 100 / s.total) : 0;
-  return `<div class="dprog"><div class="dprog-bar"><i style="width:${pct}%"></i></div>
-    <div class="small"><b>${pct}%</b> · проверено фото ${s.done} из ${s.total} · вписано моделей: <b>${s.written}</b>${s.devices ? ', видов техники: ' + s.devices : ''}</div>
-    <div class="small muted">в Яндекс отправлено ${s.sent} · пропущено: договоры и документы ${s.private}, запчасти ${s.part}, не шильдик ${s.none}${s.nomodel ? ', модель не найдена ' + s.nomodel : ''}</div></div>`;
-}
-
-async function runPlateScan() {
-  if (plateScanRun) return;
-  plateScanRun = { done: 0, total: 0, written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0 };
-  foldOpen.add('ocr');
-  let lock = null;
-  const takeLock = async () => { try { if (!lock || lock.released) lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ } };
-  await takeLock();
-  const onVis = () => { if (!document.hidden) takeLock(); };
-  document.addEventListener('visibilitychange', onVis);
-  if (location.hash.startsWith('#/settings')) renderSettings();
-  let res = null, err = null;
-  try {
-    res = await scanOldPlates((s) => {
-      Object.assign(plateScanRun, s);
-      const box = $('#scanProg'); if (box) box.innerHTML = scanProgHtml(plateScanRun);
-    }, () => plateScanRun.stopping);
-  } catch (e) { err = e; }
-  const s = plateScanRun;
-  plateScanRun = null;
-  document.removeEventListener('visibilitychange', onVis);
-  try { lock && lock.release(); } catch (e) { /* пусто */ }
-  if (err) toast(err.message, 6000);
-  else toast((res.stopped ? 'Остановлено. ' : 'Готово. ') + 'Вписано моделей: ' + s.written, 5000);
-  if (s.written) requestSync();
-  if (location.hash.startsWith('#/settings')) renderSettings();
-}
-
 // Редко нужные разделы «Диска» свёрнуты; открытые остаются открытыми при обновлении экрана
 const foldOpen = new Set();
 const foldAttr = (id) => (foldOpen.has(id) ? 'open' : '');
@@ -1260,8 +1253,9 @@ async function renderSettings() {
   const visitHours = Number(await getMeta('visitHours')) || 1.5;
   const ocrUrl = (await getMeta('ocrUrl')) || '';
   const ocrKey = (await getMeta('ocrKey')) || '';
-  const scanInfo = ocrUrl && ocrKey ? await plateScanTargets() : { list: [], photos: 0, auto: 0 };
   const autoPlate = (await getMeta('autoPlate')) !== false;
+  const st = await streetsInfo().catch(() => null);
+  const fmtDay = (d) => (d ? d.split('-').reverse().join('.') : 'старая, без даты');
 
   view.innerHTML = `
     ${s.hasKey ? `<div class="card"><h2>Яндекс Диск</h2>${disk}</div>
@@ -1280,16 +1274,13 @@ async function renderSettings() {
         он сохраняется в «Загрузки» этого телефона. Не пересылайте его и удалите, когда он больше не нужен.</p>
       <button class="btn sec" id="csv">🔒 Скачать таблицу заявок</button>
     </details>
-    <details class="card fold" data-fold="tg" ${foldAttr('tg')}><summary><h2>Импорт из Telegram</h2></summary>
-      <p class="note" style="margin-top:0">Старые заявки из канала <b>добавляются</b> к текущим, ничего не стирается.
-        Повторный импорт того же файла не создаёт дублей.</p>
-      <label class="btn sec">1. Добавить заявки из файла<input type="file" id="tgImport" accept=".json,application/json" hidden></label>
-      ${tgLeft ? `<p class="small" style="margin:12px 0 6px">Ждут фото: <b>${tgLeft}</b>. Выберите архив <b>фото.zip</b> из папки импорта —
+    ${tgLeft ? `<div class="card"><h2>Фото из Telegram</h2>
+      <p class="small" style="margin-top:0">Не дошли фото к старым заявкам: <b>${tgLeft}</b>. Выберите архив <b>фото.zip</b> из папки импорта —
         приложение само разложит снимки по заявкам. Лучше по Wi-Fi и не закрывать приложение, пока идёт.</p>
-      <label class="btn sec"><span>2. Добавить фото из архива</span><input type="file" id="tgZip" accept=".zip,application/zip,application/x-zip-compressed" hidden></label>
-      <label class="link small" style="display:block;margin-top:8px">или выбрать снимки по одному<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
-      <p class="note">После импорта удалите файл и папку с фото из телефона: они не зашифрованы.</p>
-    </details>
+      <label class="btn sec"><span>Добавить фото из архива</span><input type="file" id="tgZip" accept=".zip,application/zip,application/x-zip-compressed" hidden></label>
+      <label class="link small" style="display:block;margin-top:8px">или выбрать снимки по одному<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>
+      <p class="note">После этого удалите архив из телефона: он не зашифрован.</p>
+    </div>` : ''}
     <details class="card fold" data-fold="ocr" ${foldAttr('ocr')}><summary><h2>Считывание шильдиков</h2></summary>
       <p class="small" style="margin-top:0">Кнопка «Считать модель» на фото. Точно читает распознавание Яндекса через вашу функцию в Яндекс Облаке.
         По кнопке уходит только то фото, на котором вы её нажали, — без места съёмки.</p>
@@ -1301,20 +1292,21 @@ async function renderSettings() {
           <span id="ocrLen" style="margin-left:auto"></span></label></div>
       <div class="btns"><button class="btn" id="ocrSave">Сохранить</button><button class="btn sec" id="ocrTest">Проверить</button></div>
       ${ocrUrl && ocrKey ? `<label class="check" style="margin-top:12px"><input type="checkbox" id="autoPlate" ${autoPlate ? 'checked' : ''}> Сразу искать шильдик в новых фото заявки</label>
-      <p class="note" style="margin-top:4px">Если в заявке нет модели или вида техники, приложение само найдёт шильдик среди добавленных фото и впишет их. Договоры и прочее отсеиваются так же, как в «Распознать все».</p>` : ''}
+      <p class="note" style="margin-top:4px">Если в заявке нет модели или вида техники, приложение само найдёт шильдик среди добавленных фото и впишет их.
+        Каждое фото сначала читается прямо в телефоне. Договоры, квитанции, фото с адресом, именем с отчеством или номером телефона в Яндекс не уходят.
+        Это <b>снижает риск</b> отправки личных данных, но не исключает его полностью: телефон читает фото не идеально.</p>` : ''}
       <p class="note">${ocrUrl && ocrKey ? '✓ Настроено.' : 'Не настроено — тогда фото читается прямо в телефоне, но заметно хуже.'}
         Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
-      ${ocrUrl && ocrKey ? `<div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
-      <b>Модели в старых заявках</b>
-      <p class="small" style="margin:6px 0">${scanInfo.photos ? `Заявок без модели, но с фото: <b>${scanInfo.list.length}</b> (непроверенных фото ${scanInfo.photos}).
-        Приложение само найдёт шильдики и впишет модели. Уже проверенные фото повторно не читаются.` : 'Все фото заявок без модели уже проверены.'}</p>
-      <div id="scanProg">${plateScanRun ? scanProgHtml(plateScanRun) : ''}</div>
-      ${scanInfo.photos || plateScanRun ? `<button class="btn" id="scanRun">${plateScanRun ? 'Стоп' : 'Распознать все'}</button>` : ''}
-      ${scanInfo.auto && !plateScanRun ? `<button class="btn sec" id="scanUndo">Убрать автоматически вписанные (${scanInfo.auto})</button>` : ''}
-      <p class="note">Каждое фото сначала читается прямо в телефоне, без интернета. В Яндекс уходят только похожие на шильдик, причём всё фото целиком.
-        Фото, где телефон разглядел договор, квитанцию, адрес, имя с отчеством или номер телефона, не отправляются, сомнительные тоже.
-        Это <b>снижает риск</b> отправки личных данных, но не исключает его полностью: телефон читает фото не идеально.
-        Пока идёт, экран не гаснет. Можно остановить и потом продолжить с того же места.</p>` : ''}
+    </details>
+    <details class="card fold" data-fold="streets" ${foldAttr('streets')}><summary><h2>Справочник улиц</h2><span class="fold-note">${st && st.date ? 'от ' + esc(fmtDay(st.date)) : ''}</span></summary>
+      ${st ? `<div class="stat" style="margin-top:0">
+        <span>База от</span><b>${esc(fmtDay(st.date))}</b>
+        <span>Улиц и сёл</span><span>${st.streets.toLocaleString('ru-RU')}</span>
+        <span>Домов</span><span>${st.houses.toLocaleString('ru-RU')}</span>
+      </div>
+      <p class="note">Источник: ${esc(st.src)}. Уфа и Уфимский район. Справочник лежит в телефоне и работает без интернета.</p>` : ''}
+      <button class="btn sec" id="updStreets">Проверить обновление справочника</button>
+      <p class="note">На сайт ничего не уходит: телефон только скачивает свежий справочник, если он новее.</p>
     </details>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
@@ -1362,10 +1354,15 @@ async function renderSettings() {
     b.disabled = false; b.textContent = 'Проверить';
   };
   const ap = $('#autoPlate'); if (ap) ap.onchange = async () => { await setMeta('autoPlate', ap.checked); toast(ap.checked ? 'Включено' : 'Выключено'); };
-  const sr = $('#scanRun'); if (sr) sr.onclick = () => { if (plateScanRun) plateScanRun.stopping = true; else runPlateScan(); };
-  const su = $('#scanUndo'); if (su) su.onclick = async () => {
-    if (!confirm('Стереть модели, которые приложение вписало само (если вы их не правили)?')) return;
-    toast('Убрано: ' + (await undoAutoModels())); requestSync(); renderSettings();
+  $('#updStreets').onclick = async (e) => {
+    const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
+    try {
+      const r = await updateStreets();
+      const day = (d) => (d ? d.split('-').reverse().join('.') : 'без даты');
+      toast(r.updated ? `Справочник обновлён: база от ${day(r.after.date)}, улиц ${r.after.streets.toLocaleString('ru-RU')} (было ${r.before.streets.toLocaleString('ru-RU')})`
+        : `У вас самый свежий справочник: база от ${day(r.after.date)}`, 6000);
+      renderSettings();
+    } catch (err) { toast(navigator.onLine ? err.message : 'Нет интернета', 5000); b.disabled = false; b.textContent = 'Проверить обновление справочника'; }
   };
   $('#checkUpd').onclick = async (e) => {
     const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
@@ -1496,40 +1493,6 @@ async function renderSettings() {
       }
       await restoreDump(d, false);
       toast('Восстановлено из файла'); requestSync(); go('#/orders');
-    } catch (err) { toast(err.message); }
-  };
-
-  // ---------- Импорт из Telegram ----------
-  $('#tgImport').onchange = async (e) => {
-    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-    try {
-      const d = JSON.parse(await f.text());
-      if (d.kind !== 'telegram-import' || !Array.isArray(d.orders)) throw new Error('Это не файл импорта из Telegram');
-      const have = new Set((await dbAll('orders')).map((o) => o.id));
-      const fresh = d.orders.filter((o) => o.id && !have.has(o.id)).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-      const closed = fresh.filter((o) => o.status === 'closed');
-      const net = closed.reduce((s, o) => s + orderNet(o), 0);
-      if (!fresh.length) {
-        // заявки уже есть — но если прошлый раз прервался, допишем, какие фото к каким заявкам
-        const left = await tgRebuildPhotoMap(d.photoMap);
-        toast('Все заявки из этого файла уже добавлены' + (left ? '. Ждут фото: ' + left : ''), 5000);
-        renderSettings(); return;
-      }
-      if (!confirm(`В файле заявок: ${d.orders.length}, новых: ${fresh.length}.\n` +
-        `Закрытых: ${closed.length}, чистыми по ним: ${money(net)}.\n` +
-        `Отказ: ${fresh.filter((o) => o.status === 'refused').length}, отмена: ${fresh.filter((o) => o.status === 'cancelled').length}, ` +
-        `на СД: ${fresh.filter((o) => o.status === 'sd').length}, в работе: ${fresh.filter((o) => o.status === 'open').length}.\n\nДобавить?`)) return;
-      toast('Добавляю заявки…');
-      for (const o of fresh) {
-        o.num = await nextOrderNum();
-        o.phone = fmtPhone(o.phone);
-        await dbPut('orders', o);
-      }
-      // какие фото к каким заявкам — запоминаем до шага «Добавить фото»
-      await tgRebuildPhotoMap(d.photoMap);
-      await changed();
-      toast('Добавлено заявок: ' + fresh.length);
-      renderSettings();
     } catch (err) { toast(err.message); }
   };
 
@@ -1787,11 +1750,8 @@ async function start() {
   const typingEl = (el) => el && el.matches && el.matches('textarea, select, input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=button])');
   document.addEventListener('focusin', (e) => { if (typingEl(e.target)) document.body.classList.add('typing'); });
   document.addEventListener('focusout', () => setTimeout(() => { if (!typingEl(document.activeElement)) document.body.classList.remove('typing'); }, 50));
-  // Распознавание моделей прервали обновлением или закрытием — продолжаем с того же места
-  setTimeout(async () => {
-    const ps = await getMeta('plateScan');
-    if (ps && ps.running && !plateScanRun && (await ocrCloudConf())) { toast('Продолжаю распознавание моделей…', 4000); runPlateScan(); }
-  }, 5000);
+  // Список проверенных фото от массового считывания (убрано в 1.25) больше не нужен
+  getMeta('plateScan').then((ps) => { if (ps) setMeta('plateScan', null); });
   checkUpdateBanner(true);
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);

@@ -342,98 +342,9 @@ async function _screenLocal(blob) {
   return best.n >= 2 ? { kind: 'plate', n: best.n } : { kind: 'none', n: best.n };
 }
 
-// Заявки без модели и их фото, которые ещё не проверяли
-async function plateScanTargets() {
-  const st = (await getMeta('plateScan')) || {};
-  const checked = new Set(st.checked || []);
-  const orders = (await dbAll('orders')).filter((o) => !(o.model || '').trim());
-  const photos = await dbAll('photos');
-  const byOrder = new Map();
-  for (const p of photos) {
-    if (!p.blob || p.kind === 'contract' || checked.has(p.id)) continue;
-    if (!byOrder.has(p.orderId)) byOrder.set(p.orderId, []);
-    byOrder.get(p.orderId).push(p);
-  }
-  const list = orders.filter((o) => byOrder.has(o.id)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-    .map((o) => ({ id: o.id, photos: byOrder.get(o.id).sort((a, b) => a.createdAt - b.createdAt).map((p) => p.id) }));
-  return { list, photos: list.reduce((s, x) => s + x.photos.length, 0), auto: (await dbAll('orders')).filter((o) => o.modelAuto || o.deviceAuto).length };
-}
-
-// Пройти все заявки без модели. onProgress(stats) — для полоски, stop() — true, если нажали «Стоп».
-async function scanOldPlates(onProgress, stop) {
-  const conf = await ocrCloudConf();
-  if (!conf) throw new Error('Сначала настройте распознавание Яндекса выше');
-  const st = (await getMeta('plateScan')) || {};
-  const checked = st.checked || [];
-  const s = { written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0, done: 0, ...(st.stats || {}) };
-  const { list, photos } = await plateScanTargets();
-  s.total = s.done + photos;   // процент — с учётом проверенного в прошлые разы
-  // running: true — если приложение закрыли посреди проверки, при следующем запуске оно продолжит само
-  const save = (running = true) => setMeta('plateScan', { checked, running, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel, devices: s.devices || 0, done: s.done } });
-  await save();
-  onProgress(s);
-  for (const item of list) {
-    let left = item.photos.length;
-    for (const pid of item.photos) {
-      while (document.hidden && !stop()) await new Promise((ok) => setTimeout(ok, 5000)); // свернули — пауза
-      if (stop()) { await save(false); return { ...s, stopped: true }; }
-      const p = await dbGet('photos', pid);
-      const o = await dbGet('orders', item.id);
-      if (!o || (o.model || '').trim()) break;          // модель уже есть — остальные фото этой заявки не нужны
-      left--; s.done++;
-      if (!p || !p.blob) continue;
-      const v = await _screenLocal(p.blob);
-      if (v.kind !== 'plate') { s[v.kind]++; checked.push(pid); await save(); onProgress(s); continue; }
-      let text = null;
-      for (let tryN = 0; text === null; tryN++) {
-        try { text = await cloudOcrText(p.blob, conf); } catch (e) {
-          if (/Неверный ключ/.test(e.message) || tryN >= 3) { await save(!/Неверный ключ/.test(e.message)); throw e; }
-          await new Promise((ok) => setTimeout(ok, 15000));
-        }
-      }
-      s.sent++; checked.push(pid);
-      const cv = screenPlate(text);
-      const r = plateCandidates(text);
-      if (cv.kind === 'plate' && r.device) {   // вид техники — если в заявке не указан
-        const fo = await dbGet('orders', item.id);
-        if (fo && !fo.device) { fo.device = r.device; fo.deviceAuto = true; fo.updatedAt = Date.now(); await dbPut('orders', fo); await markDirty(); s.devices = (s.devices || 0) + 1; }
-      }
-      const sure = cv.kind === 'plate' && r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));
-      if (!sure) { s.nomodel++; await save(); onProgress(s); continue; }
-      const fresh = await dbGet('orders', item.id);
-      if (fresh && !(fresh.model || '').trim()) {
-        Object.assign(fresh, { model: plateLabel(r.brand, r.models[0]), modelAuto: true, updatedAt: Date.now() });
-        await dbPut('orders', fresh); await markDirty();
-        s.written++;
-      }
-      await save(); onProgress(s);
-      break;
-    }
-    s.done += left;   // остальные фото заявки уже не нужны
-    onProgress(s);
-  }
-  await save(false);
-  return s;
-}
-
-// Убрать всё, что записано автоматически и не правилось вручную
-async function undoAutoModels() {
-  let n = 0;
-  for (const o of await dbAll('orders')) {
-    if (!o.modelAuto && !o.deviceAuto) continue;
-    if (o.modelAuto) { o.model = ''; delete o.modelAuto; }
-    if (o.deviceAuto) { o.device = ''; delete o.deviceAuto; }
-    o.updatedAt = Date.now();
-    await dbPut('orders', o); n++;
-  }
-  await setMeta('plateScan', null);
-  if (n) await markDirty();
-  return n;
-}
-
 // ---------- Шильдик сразу при добавлении фото ----------
 // Новые фото заявки, где нет модели или вида техники: телефон сам ищет среди них шильдик (договоры
-// и прочее отсеиваются так же, как в «Распознать все»), найденный читает Яндекс. Записывается только пустое.
+// и прочее отсеиваются ещё в телефоне), найденный читает Яндекс. Записывается только пустое.
 let _autoPlateQueue = Promise.resolve();
 function autoPlateOnAdd(orderId, photoIds, onStep) {
   const run = _autoPlateQueue.then(() => _autoPlate(orderId, photoIds, onStep));
@@ -447,16 +358,11 @@ async function _autoPlate(orderId, photoIds, onStep) {
   const o0 = await dbGet('orders', orderId);
   if (!o0 || ((o0.model || '').trim() && o0.device)) return null;
   const got = {};
-  const mark = async (pid) => {   // пакетная проверка это фото повторно не возьмёт
-    const st = (await getMeta('plateScan')) || {};
-    await setMeta('plateScan', { ...st, checked: [...(st.checked || []), pid] });
-  };
   for (const pid of photoIds) {
     const p = await dbGet('photos', pid);
     if (!p || !p.blob) continue;
     onStep && onStep('Ищу шильдик на фото…');
     const v = await _screenLocal(p.blob);
-    await mark(pid);
     if (v.kind !== 'plate') continue;
     onStep && onStep('Читаю шильдик…');
     const text = await cloudOcrText(p.blob, conf);

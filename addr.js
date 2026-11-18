@@ -13,10 +13,37 @@ const _TYPE_WORDS = new Set(['ул', 'улица', 'пр', 'пр-т', 'прос�
   'пр-д', 'проезд', 'ш', 'шоссе', 'туп', 'тупик', 'пл', 'площадь', 'наб', 'набережная', 'мкр', 'микрорайон', 'д', 'дом',
   'с', 'село', 'деревня', 'п', 'пос', 'поселок', 'г', 'город', 'тракт', 'аллея', 'кв', 'квартал', 'снт', 'линия']);
 
+// Справочник: свой из комплекта приложения или скачанный кнопкой «Обновить справочник» — берётся тот, что новее
+const STREETS_CACHE = 'zayavki-streets';
+let _streetsMeta = null;  // { date, src, streets, houses }
+async function _readStreets() {
+  const own = await fetch('streets.json').then((r) => r.json());
+  let got = null;
+  try { const r = await (await caches.open(STREETS_CACHE)).match('streets.json'); if (r) got = await r.json(); } catch (e) { /* нет */ }
+  return got && (got.date || '') > (own.date || '') ? got : own;
+}
+function _setMeta(d) {
+  _streetsMeta = { date: d.date || '', src: d.src || '', streets: d.s.length, houses: d.s.reduce((n, x) => n + (x[2] ? x[2].split('|').length : 0), 0) };
+}
+async function streetsInfo() { await loadStreets(); return _streetsMeta; }
+// Скачать справочник с сайта (минуя память приложения); новее — сохранить. Ответ: { updated, before, after }
+async function updateStreets() {
+  const before = await streetsInfo();
+  const r = await fetch('streets.json?fresh=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('Сайт не ответил (' + r.status + ')');
+  const d = await r.clone().json();
+  if (!Array.isArray(d.s) || d.s.length < 100) throw new Error('Справочник на сайте повреждён');
+  if ((d.date || '') <= (before.date || '')) return { updated: false, before, after: before };
+  await (await caches.open(STREETS_CACHE)).put('streets.json', r);
+  _streets = null; _streetsLoading = null;
+  return { updated: true, before, after: await streetsInfo() };
+}
+
 function loadStreets() {
   if (_streets) return Promise.resolve(_streets);
   if (!_streetsLoading) {
-    _streetsLoading = fetch('streets.json').then((r) => r.json()).then((d) => {
+    _streetsLoading = _readStreets().then((d) => {
+      _setMeta(d);
       _streets = d.s.map(([label, li, h]) => {
         const loc = d.loc[li];
         // Уфа — без приписки; сёла района — «Миловка, ул. Садовая»; село без улиц — просто «Михайловка»
@@ -56,34 +83,46 @@ function _houseSort(a, b) {
   return na - nb || a.localeCompare(b, 'ru');
 }
 
-// Подсказки для текущего текста: [{ text, sub, value, kind }]
+// Свои прошлые заявки по этому адресу — по квартирам: «Ленина 12, кв. 5 · Иванов · холодильник · №386».
+// history — заявки, свежие первыми. match(ключ адреса) — подходит ли адрес.
+function _flatSuggestions(history, match, max) {
+  const out = []; const seen = new Set();
+  for (const o of history) {
+    const key = ' ' + _norm(o.address);
+    if (!match(key)) continue;
+    const flat = key + '|' + _norm(o.apt);
+    if (seen.has(flat)) continue;
+    seen.add(flat);
+    out.push({ text: o.address + (o.apt ? ', кв. ' + o.apt : ''), value: o.address, kind: 'history', order: o,
+      sub: ['были', o.name, o.device ? o.device.toLowerCase() : '', '№' + o.num].filter(Boolean).join(' · ') });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// Подсказки для текущего текста: [{ text, sub, value, kind, order? }]
 async function addressSuggestions(value, history) {
   const v = value.replace(/^\s+/, '');
   const out = [];
   if (_norm(v).length < 2) return out;
   await loadStreets();
 
-  // Улица уже выбрана — подсказываем дома
+  // Улица уже выбрана — сначала квартиры, где уже были, потом дома
   const known = _splitKnownStreet(v);
   if (known && !known.rest.includes(',')) {
+    const nv = ' ' + _norm(v);
+    const flats = _norm(known.rest) ? _flatSuggestions(history, (k) => k === nv || k.startsWith(nv + ' '), 6) : [];
     const q = _norm(known.rest).replace(/^(д|дом)\s*/, '').replace(/\s+/g, '');
     const hs = known.street.houses.filter((h) => _norm(h).replace(/\s+/g, '').startsWith(q)).sort(_houseSort);
-    if (q && hs.length === 1 && _norm(hs[0]).replace(/\s+/g, '') === q) return out; // дом уже дописан
-    return hs.slice(0, 8).map((h) => ({ text: known.street.label + ', ' + h, sub: 'дом', value: known.street.label + ', ' + h, kind: 'house' }));
+    if (q && hs.length === 1 && _norm(hs[0]).replace(/\s+/g, '') === q) return flats; // дом уже дописан
+    return flats.concat(hs.slice(0, 8 - Math.min(flats.length, 4)).map((h) => ({ text: known.street.label + ', ' + h, sub: 'дом', value: known.street.label + ', ' + h, kind: 'house' })));
   }
 
   const toks = _tokens(v);
   if (!toks.length) return out;
 
-  // Свои прошлые адреса — первыми
-  const seen = new Set();
-  for (const a of history) {
-    const key = ' ' + _norm(a);
-    if (seen.has(key) || !_matches(key, toks)) continue;
-    seen.add(key);
-    out.push({ text: a, sub: 'уже были', value: a, kind: 'history' });
-    if (out.length >= 3) break;
-  }
+  // Свои прошлые адреса — первыми, по квартирам
+  out.push(..._flatSuggestions(history, (k) => _matches(k, toks), v.includes(',') ? 6 : 4));
 
   if (v.includes(',')) return out; // после запятой улицы не ищем — пишут дом/квартиру
   const first = toks[0];
@@ -102,8 +141,8 @@ async function addressSuggestions(value, history) {
   return out;
 }
 
-// Подключить подсказки к полю адреса
-function attachAddressSuggest(input, getHistory) {
+// Подключить подсказки к полю адреса. onPick(order) — выбрали квартиру, где уже были.
+function attachAddressSuggest(input, getHistory, onPick) {
   const field = input.closest('.field');
   field.classList.add('suggest-host');
   const list = document.createElement('div');
@@ -128,6 +167,7 @@ function attachAddressSuggest(input, getHistory) {
         input.value = it.value;
         input.dispatchEvent(new Event('input', { bubbles: true }));
         if (it.kind !== 'street') { list.hidden = true; seq++; }
+        if (it.order && onPick) { onPick(it.order); return; }
         input.focus();
         const end = input.value.length; input.setSelectionRange(end, end);
       });
