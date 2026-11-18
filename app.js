@@ -44,11 +44,12 @@ async function copyText(t) {
 }
 
 const DEVICES = ['Холодильник', 'Стиральная машина', 'Телевизор', 'Другое'];
-const EXP_CATS = ['Реклама', 'Прочее'];
+const EXP_CATS = ['Реклама', 'Колибри', 'Прочее'];
+const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся раз в месяц — выбирается месяц, а не дата
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.18'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.19'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -413,6 +414,7 @@ async function renderOrderForm(id, warrantyFromId) {
     const rec = o ? { ...o } : { id: uid(), num: await nextOrderNum(), createdAt: now, status: 'open', costs: [], income: 0 };
     Object.assign(rec, data, { device, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null, updatedAt: now });
     if (warrantyOf) { rec.isWarranty = true; rec.warrantyOf = warrantyOf; }
+    if (o && o.modelAuto && rec.model !== o.model) delete rec.modelAuto;   // поправили вручную — уже не «авто»
     await dbPut('orders', rec);
     toast(o ? 'Сохранено' : 'Заявка №' + rec.num + ' создана');
     changed();
@@ -499,7 +501,7 @@ async function renderOrder(id) {
     </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
-      <div class="row" style="margin-bottom:10px"><span class="grow"><b>${esc([o.device, o.model].filter(Boolean).join(' ') || 'Техника не указана')}</b>${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
+      <div class="row" style="margin-bottom:10px"><span class="grow"><b>${esc([o.device, o.model].filter(Boolean).join(' ') || 'Техника не указана')}</b>${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
       <dl class="kv">
         ${o.name ? `<dt>Имя</dt><dd>${esc(o.name)}</dd>` : ''}
         ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)}<br><button type="button" class="link small" data-a="copyc">📋 Копировать для контакта</button></dd>` : ''}
@@ -675,7 +677,7 @@ async function openViewer(photoId, o, box) {
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
       const res = await plateDialog(r, fresh.model || '');
       if (!res || !res.model) return;
-      Object.assign(fresh, { model: res.model, updatedAt: Date.now() });
+      Object.assign(fresh, { model: res.model, updatedAt: Date.now() }); delete fresh.modelAuto;
       await dbPut('orders', fresh);
       o.model = res.model;
       toast('Модель записана: ' + res.model); changed();
@@ -816,26 +818,44 @@ async function renderExpenseForm(id) {
   const [ry, rm] = state.month.split('-').map(Number);
   const defDate = state.month === monthKey(Date.now()) ? Date.now() : new Date(ry, rm - 1, 1, 12).getTime();
   let cat = e0 ? e0.category : 'Реклама';
+  let month = e0 ? monthKey(e0.date) : state.month;
   const cats = EXP_CATS.includes(cat) ? EXP_CATS : [...EXP_CATS, cat]; // старые категории не теряем
   view.innerHTML = `
     <form id="f" autocomplete="off">
-      <div class="field"><label>Категория</label>
+      <div class="field"><label>Что за расход</label>
         <div class="chips" id="cats">${cats.map((c) => `<button type="button" class="chip ${c === cat ? 'on' : ''}" data-v="${c}">${c}</button>`).join('')}</div></div>
+      <div class="field" id="monthF"><label>За какой месяц</label>
+        <div class="month-nav" style="margin:0"><button type="button" id="mPrev">‹</button><b id="mName"></b><button type="button" id="mNext">›</button></div></div>
       <div class="field"><label>Сумма, ₽</label><input class="input big" name="amount" inputmode="decimal" placeholder="0" value="${e0 ? esc(e0.amount) : ''}"></div>
-      <div class="field"><label>Комментарий</label><input class="input" name="comment" placeholder="Например: Авито, продвижение" value="${esc(e0?.comment)}"></div>
-      <div class="field"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(e0 ? e0.date : defDate)}"></div>
+      <div class="field"><label id="cLabel"></label><input class="input" name="comment" value="${esc(e0?.comment)}"></div>
+      <div class="field" id="dateF"><label>Дата</label><input class="input" type="date" name="date" value="${toDateInput(e0 ? e0.date : defDate)}"></div>
       <button class="btn" type="submit">Сохранить</button>
       ${e0 ? '<button class="btn danger" type="button" id="del">Удалить</button>' : ''}
     </form>`;
-  $$('#cats .chip').forEach((c) => c.onclick = () => { cat = c.dataset.v; $$('#cats .chip').forEach((x) => x.classList.toggle('on', x === c)); });
+  const sync = () => {
+    const monthly = EXP_MONTHLY.includes(cat);
+    $('#monthF').hidden = !monthly; $('#dateF').hidden = monthly;
+    $('#mName').textContent = monthName(month);
+    $('#cLabel').innerHTML = monthly ? 'Комментарий <span class="muted">— можно не писать</span>' : 'За что заплачено';
+    $('[name=comment]').placeholder = cat === 'Реклама' ? 'Например: Авито, Яндекс' : cat === 'Колибри' ? 'колл-трекинг' : 'Например: бензин, инструмент, связь';
+  };
+  $$('#cats .chip').forEach((c) => c.onclick = () => { cat = c.dataset.v; $$('#cats .chip').forEach((x) => x.classList.toggle('on', x === c)); sync(); });
+  $('#mPrev').onclick = () => { month = shiftMonth(month, -1); sync(); };
+  $('#mNext').onclick = () => { month = shiftMonth(month, 1); sync(); };
+  sync();
   if (!e0) $('[name=amount]').focus();
   $('#f').onsubmit = async (ev) => {
     ev.preventDefault();
     const amount = parseMoney($('[name=amount]').value);
     if (!amount) { toast('Введите сумму'); return; }
-    const rec = { ...(e0 || { id: uid(), createdAt: Date.now() }), category: cat, amount,
-      comment: $('[name=comment]').value.trim(), date: fromDateInput($('[name=date]').value, e0?.date), updatedAt: Date.now() };
+    const monthly = EXP_MONTHLY.includes(cat);
+    const comment = $('[name=comment]').value.trim();
+    if (!monthly && !comment) { toast('Напишите, за что заплачено'); $('[name=comment]').focus(); return; }
+    const [y, m] = month.split('-').map(Number);
+    const date = monthly ? new Date(y, m - 1, 1, 12).getTime() : fromDateInput($('[name=date]').value, e0?.date);
+    const rec = { ...(e0 || { id: uid(), createdAt: Date.now() }), category: cat, amount, comment, date, monthly: monthly || undefined, updatedAt: Date.now() };
     await dbPut('expenses', rec);
+    state.month = monthKey(date); // показать отчёт за тот месяц, куда записали
     toast('Расход сохранён'); changed(); go('#/report', true);
   };
   const d = $('#del'); if (d) d.onclick = async () => {
@@ -902,7 +922,7 @@ async function renderReport() {
       <div class="row card-head"><h2 class="grow">Реклама и прочее</h2><a class="btn sec mini" href="#/expense/new">+ Добавить</a></div>
       ${exps.length ? `<div class="list">${exps.map((e) => `<a class="item" href="#/expense/${e.id}" style="border:0;padding:6px 0">
         <div class="row small"><span class="grow">${esc(e.category)}${e.comment ? ' · ' + esc(e.comment) : ''}</span>
-        <span class="muted">${esc(dayShort(e.date))}</span><span class="neg">${money(e.amount)}</span></div></a>`).join('')}</div>`
+        <span class="muted">${e.monthly ? 'за месяц' : esc(dayShort(e.date))}</span><span class="neg">${money(e.amount)}</span></div></a>`).join('')}</div>`
         : '<p class="note" style="margin:0">В этом месяце пусто. Реклама, бензин и всё, что не относится к одной заявке.</p>'}
     </div>
     <div class="card">
@@ -986,9 +1006,104 @@ const askCopyPassword = (attempt) => passwordDialog({
 });
 
 const syncMessage = (r) => ({
-  ok: 'Готово, отправлено', nothing: 'Всё уже на Диске', waiting: 'Нет связи — отправлю позже',
+  ok: 'Готово, отправлено', nothing: 'Всё уже на Диске',
+  waiting: r.why === 'busy' ? 'Диск попросил подождать — продолжу позже' : 'Нет связи — отправлю позже',
   busy: 'Уже отправляется', nokey: 'Сначала задайте пароль', off: 'Диск не подключён',
 }[r.status] || r.error || 'Ошибка');
+
+// ---------- Отправка на Диск с процентом ----------
+const WAIT_WHY = {
+  offline: 'Нет интернета — отправлю, когда появится.',
+  busy: 'Яндекс Диск попросил подождать: много файлов подряд. Продолжу сам через пару минут.',
+  net: 'Связь с Диском обрывалась. Так бывает, когда гаснет экран или приложение свёрнуто: Android отключает интернет приложениям в фоне. Нажмите «Отправить» и не сворачивайте приложение.',
+};
+let sendingAll = false;
+
+function diskProgressHtml(done, all) {
+  const pct = all ? Math.floor(done * 100 / all) : 100;
+  return `<div class="dprog"><div class="dprog-bar"><i style="width:${pct}%"></i></div>
+    <div class="small"><b>${pct}%</b> · фото на Диске: ${done} из ${all}</div></div>`;
+}
+function updateDiskProgress(done, all) {
+  const box = $('.dprog'); if (!box) return;
+  box.outerHTML = diskProgressHtml(done, all);
+  const sn = $('#syncNow'); if (sn && sendingAll) sn.textContent = `Отправляю… ${Math.floor(done * 100 / all)}%`;
+}
+
+// Отправляет всё, что ждёт, держа экран включённым. Диск занят или связь мигнула — ждёт и продолжает,
+// пока приложение открыто. Свернули — пауза, продолжит обычная отправка при открытии.
+async function sendAll() {
+  if (sendingAll) return;
+  sendingAll = true;
+  let lock = null;
+  const takeLock = async () => { try { if (!lock || lock.released) lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ } };
+  await takeLock();
+  const onVis = () => { if (!document.hidden) takeLock(); };
+  document.addEventListener('visibilitychange', onVis);
+  await setMeta('syncError', null);
+  renderSettings();
+  let r, fails = 0;
+  try {
+    for (;;) {
+      r = await syncNow();
+      updateSyncBadge();
+      if (r.status !== 'waiting' && r.status !== 'busy') break;
+      if (r.sent) fails = 0; else fails++;
+      if (fails > 30 || !navigator.onLine) break;                // долго не идёт или нет интернета — сдаёмся
+      const pause = r.status === 'busy' ? 3000 : r.why === 'busy' ? 60000 : 15000;
+      await new Promise((ok) => setTimeout(ok, pause));
+      while (document.hidden) await new Promise((ok) => setTimeout(ok, 5000)); // свернули — ждём возвращения
+    }
+  } finally {
+    sendingAll = false;
+    document.removeEventListener('visibilitychange', onVis);
+    try { lock && lock.release(); } catch (e) { /* пусто */ }
+  }
+  toast(syncMessage(r));
+  updateSyncBadge();
+  if (location.hash.startsWith('#/settings')) renderSettings();
+}
+
+// ---------- Модели в старых заявках: пачкой ----------
+let plateScanRun = null;   // идёт проверка — здесь цифры
+
+function scanProgHtml(s) {
+  const pct = s.total ? Math.floor(s.done * 100 / s.total) : 0;
+  return `<div class="dprog"><div class="dprog-bar"><i style="width:${pct}%"></i></div>
+    <div class="small"><b>${pct}%</b> · проверено фото ${s.done} из ${s.total} · вписано моделей: <b>${s.written}</b></div>
+    <div class="small muted">в Яндекс отправлено ${s.sent} · пропущено: договоры и документы ${s.private}, запчасти ${s.part}, не шильдик ${s.none}${s.nomodel ? ', модель не найдена ' + s.nomodel : ''}</div></div>`;
+}
+
+async function runPlateScan() {
+  if (plateScanRun) return;
+  plateScanRun = { done: 0, total: 0, written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0 };
+  foldOpen.add('ocr');
+  let lock = null;
+  const takeLock = async () => { try { if (!lock || lock.released) lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ } };
+  await takeLock();
+  const onVis = () => { if (!document.hidden) takeLock(); };
+  document.addEventListener('visibilitychange', onVis);
+  if (location.hash.startsWith('#/settings')) renderSettings();
+  let res = null, err = null;
+  try {
+    res = await scanOldPlates((s) => {
+      Object.assign(plateScanRun, s);
+      const box = $('#scanProg'); if (box) box.innerHTML = scanProgHtml(plateScanRun);
+    }, () => plateScanRun.stopping);
+  } catch (e) { err = e; }
+  const s = plateScanRun;
+  plateScanRun = null;
+  document.removeEventListener('visibilitychange', onVis);
+  try { lock && lock.release(); } catch (e) { /* пусто */ }
+  if (err) toast(err.message, 6000);
+  else toast((res.stopped ? 'Остановлено. ' : 'Готово. ') + 'Вписано моделей: ' + s.written, 5000);
+  if (s.written) requestSync();
+  if (location.hash.startsWith('#/settings')) renderSettings();
+}
+
+// Редко нужные разделы «Диска» свёрнуты; открытые остаются открытыми при обновлении экрана
+const foldOpen = new Set();
+const foldAttr = (id) => (foldOpen.has(id) ? 'open' : '');
 
 async function renderSettings() {
   setTitle('Диск и копии');
@@ -1015,10 +1130,12 @@ async function renderSettings() {
       <span>Последняя отправка</span><span>${s.lastSync ? esc(fmtDate(s.lastSync)) : '—'}</span>
       <span>Ждут отправки</span><span>${s.pendingPhotos} фото${s.dataPending ? ' + данные' : ''}</span>
     </div>
+    ${s.pendingPhotos ? diskProgressHtml(s.uploadedPhotos, s.uploadedPhotos + s.pendingPhotos) : ''}
     ${s.error ? `<p class="small neg">${esc(s.error)}</p>` : ''}
     ${!s.hasKey ? '<p class="small neg">Задайте пароль выше — без него на Диск ничего не отправляется.</p>' : ''}
-    ${s.waiting && !s.error ? '<p class="small muted">Нет связи — отправлю, когда появится интернет.</p>' : ''}
-    <button class="btn" id="syncNow" style="margin-top:12px">Отправить сейчас</button>
+    ${s.waiting && !s.error && !sendingAll ? `<p class="small muted">${WAIT_WHY[s.waitWhy] || WAIT_WHY.net}</p>` : ''}
+    <button class="btn" id="syncNow" style="margin-top:12px" ${sendingAll ? 'disabled' : ''}>${sendingAll ? 'Отправляю…' : s.pendingPhotos > 20 ? 'Отправить всё' : 'Отправить сейчас'}</button>
+    ${s.pendingPhotos > 20 ? '<p class="note" style="margin-top:0">Пока идёт отправка, экран не гаснет. Держите приложение открытым, лучше на зарядке и Wi-Fi. Свернёте — отправка встанет на паузу и продолжится, когда откроете.</p>' : ''}
     <button class="btn sec" id="fromDisk">Восстановить с Диска</button>
     <button class="btn danger" id="disconnect">Отключить Диск</button>
     <p class="note">На Диске в папке «Приложения» лежат только зашифрованные файлы <b>data.bin</b> и папка <b>Фото</b>.
@@ -1044,23 +1161,26 @@ async function renderSettings() {
   const visitHours = Number(await getMeta('visitHours')) || 1.5;
   const ocrUrl = (await getMeta('ocrUrl')) || '';
   const ocrKey = (await getMeta('ocrKey')) || '';
+  const scanInfo = ocrUrl && ocrKey ? await plateScanTargets() : { list: [], photos: 0, auto: 0 };
 
   view.innerHTML = `
-    <div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
-    <div class="card"><h2>Яндекс Диск</h2>${disk}</div>
-    <div class="card"><h2>Резервная копия без интернета</h2>
+    ${s.hasKey ? `<div class="card"><h2>Яндекс Диск</h2>${disk}</div>
+    <details class="card fold" data-fold="pw" ${foldAttr('pw')}><summary><h2>Пароль для шифрования</h2><span class="fold-note">🔒 задан</span></summary>${lock}</details>`
+    : `<div class="card"><h2>Пароль для шифрования</h2>${lock}</div>
+    <div class="card"><h2>Яндекс Диск</h2>${disk}</div>`}
+    <details class="card fold" data-fold="backup" ${foldAttr('backup')}><summary><h2>Резервная копия без интернета</h2></summary>
       <p class="note" style="margin-top:0">Файл со всеми заявками и расходами (без фото), зашифрован вашим паролем.
         Можно отправить себе в Telegram: без пароля его никто не прочитает.</p>
       <button class="btn sec" id="share">Отправить копию…</button>
       <button class="btn sec" id="download">Скачать копию файлом</button>
       <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".txt,.json,text/plain,application/json" hidden></label>
-    </div>
-    <div class="card"><h2>Таблица для Excel</h2>
+    </details>
+    <details class="card fold" data-fold="csv" ${foldAttr('csv')}><summary><h2>Таблица для Excel</h2></summary>
       <p class="note" style="margin-top:0">Скачать можно только с паролем. Сам файл <b class="neg">не зашифрован</b>:
         он сохраняется в «Загрузки» этого телефона. Не пересылайте его и удалите, когда он больше не нужен.</p>
       <button class="btn sec" id="csv">🔒 Скачать таблицу заявок</button>
-    </div>
-    <div class="card"><h2>Импорт из Telegram</h2>
+    </details>
+    <details class="card fold" data-fold="tg" ${foldAttr('tg')}><summary><h2>Импорт из Telegram</h2></summary>
       <p class="note" style="margin-top:0">Старые заявки из канала <b>добавляются</b> к текущим, ничего не стирается.
         Повторный импорт того же файла не создаёт дублей.</p>
       <label class="btn sec">1. Добавить заявки из файла<input type="file" id="tgImport" accept=".json,application/json" hidden></label>
@@ -1069,10 +1189,10 @@ async function renderSettings() {
       <label class="btn sec"><span>2. Добавить фото из архива</span><input type="file" id="tgZip" accept=".zip,application/zip,application/x-zip-compressed" hidden></label>
       <label class="link small" style="display:block;margin-top:8px">или выбрать снимки по одному<input type="file" id="tgPhotos" accept="image/*" multiple hidden></label>` : ''}
       <p class="note">После импорта удалите файл и папку с фото из телефона: они не зашифрованы.</p>
-    </div>
-    <div class="card"><h2>Считывание шильдиков</h2>
+    </details>
+    <details class="card fold" data-fold="ocr" ${foldAttr('ocr')}><summary><h2>Считывание шильдиков</h2></summary>
       <p class="small" style="margin-top:0">Кнопка «Считать модель» на фото. Точно читает распознавание Яндекса через вашу функцию в Яндекс Облаке.
-        Отправляется только то фото, на котором вы нажали кнопку, — без места съёмки.</p>
+        По кнопке уходит только то фото, на котором вы её нажали, — без места съёмки.</p>
       <div class="field"><label>Ссылка функции</label>
         <input class="input" id="ocrUrl" inputmode="url" autocomplete="off" placeholder="https://functions.yandexcloud.net/…" value="${esc(ocrUrl)}"></div>
       <div class="field"><label>Секретный ключ <span class="muted">— тот же, что APP_KEY в функции</span></label>
@@ -1082,7 +1202,17 @@ async function renderSettings() {
       <div class="btns"><button class="btn" id="ocrSave">Сохранить</button><button class="btn sec" id="ocrTest">Проверить</button></div>
       <p class="note">${ocrUrl && ocrKey ? '✓ Настроено.' : 'Не настроено — тогда фото читается прямо в телефоне, но заметно хуже.'}
         Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
-    </div>
+      ${ocrUrl && ocrKey ? `<div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
+      <b>Модели в старых заявках</b>
+      <p class="small" style="margin:6px 0">${scanInfo.photos ? `Заявок без модели, но с фото: <b>${scanInfo.list.length}</b> (непроверенных фото ${scanInfo.photos}).` : 'Все заявки без модели уже проверены.'}
+        Приложение само найдёт шильдики и впишет модели.</p>
+      <div id="scanProg">${plateScanRun ? scanProgHtml(plateScanRun) : ''}</div>
+      ${scanInfo.photos || plateScanRun ? `<button class="btn" id="scanRun">${plateScanRun ? 'Стоп' : 'Распознать все'}</button>` : ''}
+      ${scanInfo.auto && !plateScanRun ? `<button class="btn sec" id="scanUndo">Убрать автоматически вписанные (${scanInfo.auto})</button>` : ''}
+      <p class="note">Каждое фото сначала читается прямо в телефоне, без интернета. В Яндекс уходят только похожие на шильдик.
+        Договоры, квитанции, наклейки запчастей и всё, где виден номер телефона, не отправляются. Если сомнение, фото тоже не отправляется.
+        Пока идёт, экран не гаснет. Можно остановить и потом продолжить с того же места.</p>` : ''}
+    </details>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
         <span>Версия</span><b>${APP_VERSION}</b>
@@ -1096,6 +1226,7 @@ async function renderSettings() {
     <p class="note">Справочник улиц: © участники OpenStreetMap (ODbL)</p>`;
 
   $('#visitHours').onchange = async (e) => { await setMeta('visitHours', Number(e.target.value)); toast('Сохранено'); };
+  $$('details.fold', view).forEach((d) => d.ontoggle = () => { if (d.open) foldOpen.add(d.dataset.fold); else foldOpen.delete(d.dataset.fold); });
 
   // Считывание шильдиков через Яндекс
   const ocrRead = () => ({ url: $('#ocrUrl').value.trim(), key: $('#ocrKey').value.trim() });
@@ -1126,6 +1257,11 @@ async function renderSettings() {
       else toast('Функция ответила, но текст не прочитан: «' + text.slice(0, 40) + '»', 5000);
     } catch (err) { toast(err.message, 6000); }
     b.disabled = false; b.textContent = 'Проверить';
+  };
+  const sr = $('#scanRun'); if (sr) sr.onclick = () => { if (plateScanRun) plateScanRun.stopping = true; else runPlateScan(); };
+  const su = $('#scanUndo'); if (su) su.onclick = async () => {
+    if (!confirm('Стереть модели, которые приложение вписало само (если вы их не правили)?')) return;
+    toast('Убрано: ' + (await undoAutoModels())); requestSync(); renderSettings();
   };
   $('#checkUpd').onclick = async (e) => {
     const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
@@ -1189,12 +1325,7 @@ async function renderSettings() {
     await onDiskConnected(token);
     updateSyncBadge(); renderSettings(); requestSync();
   };
-  const sn = $('#syncNow'); if (sn) sn.onclick = async () => {
-    sn.disabled = true; sn.textContent = 'Отправляю…';
-    await setMeta('syncError', null);
-    toast(syncMessage(await syncNow()));
-    updateSyncBadge(); renderSettings();
-  };
+  const sn = $('#syncNow'); if (sn) sn.onclick = () => sendAll();
   const fd = $('#fromDisk'); if (fd) fd.onclick = async () => {
     if (!confirm('Заменить данные в телефоне копией с Диска? Несохранённые на Диск изменения пропадут.')) return;
     try {
@@ -1495,7 +1626,13 @@ async function start() {
   }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { /* пусто */ }
 
-  if (syncChannel) syncChannel.onmessage = () => { updateSyncBadge(); if (location.hash.startsWith('#/settings') && !document.activeElement?.matches('input')) renderSettings(); };
+  if (syncChannel) syncChannel.onmessage = (ev) => {
+    const m = ev.data || {};
+    updateSyncBadge();
+    if (!location.hash.startsWith('#/settings')) return;
+    if (m.type === 'progress') { if (m.all) updateDiskProgress(m.done, m.all); return; }  // только полоска, без перерисовки
+    if (!document.activeElement?.matches('input')) renderSettings();
+  };
   window.addEventListener('online', () => { updateSyncBadge(); requestSync(); });
   window.addEventListener('offline', updateSyncBadge);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) { requestSync(); checkUpdateBanner(); } });

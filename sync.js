@@ -168,17 +168,20 @@ async function syncStatus() {
   const token = await getMeta('ydToken');
   const photos = await dbAll('photos');
   const pendingPhotos = photos.filter((p) => !p.uploaded && p.blob).length;
+  const uploadedPhotos = photos.filter((p) => p.uploaded).length;
   const dataVersion = (await getMeta('dataVersion')) || 0;
   const syncedVersion = (await getMeta('syncedVersion')) || 0;
   return {
     connected: !!token,
     hasKey: await hasPassword(),
     pendingPhotos,
+    uploadedPhotos,
     dataPending: dataVersion !== syncedVersion,
     pendingDeletes: ((await getMeta('pendingDeletes')) || []).length,
     lastSync: await getMeta('lastSync'),
     error: await getMeta('syncError'),
     waiting: await getMeta('syncWaiting'),
+    waitWhy: await getMeta('syncWaitWhy'),   // offline | busy | net — почему ждём
   };
 }
 
@@ -231,6 +234,7 @@ async function _doSync() {
 
   _notify({ type: 'start' });
   let sent = 0;
+  const before = (await dbAll('photos')).filter((p) => p.uploaded).length;   // для процента «отправлено из всех»
   try {
     await _retry(() => ydMkdir(token, ROOT));
     if (needMigrate) { await _migrateToEncrypted(token); q = await _pending(); }
@@ -247,7 +251,7 @@ async function _doSync() {
       const fresh = await dbGet('photos', p.id);
       if (fresh) { fresh.uploaded = 1; fresh.remotePath = path; await dbPut('photos', fresh); }
       sent++;
-      _notify({ type: 'progress', sent, total: q.photos.length });
+      _notify({ type: 'progress', sent, total: q.photos.length, done: before + sent, all: before + q.photos.length });
     }
 
     // 2. Удалённое в приложении — в корзину Диска (там тоже только зашифрованное)
@@ -276,8 +280,10 @@ async function _doSync() {
     if (e instanceof NetError) {
       await setMeta('syncError', null);   // временное — не ошибка, повторим позже
       await setMeta('syncWaiting', true);
-      _notify({ type: 'waiting' });
-      return { status: 'waiting', error: e.message };
+      const why = e instanceof BusyError ? 'busy' : (self.navigator && navigator.onLine === false ? 'offline' : 'net');
+      await setMeta('syncWaitWhy', why);
+      _notify({ type: 'waiting', why });
+      return { status: 'waiting', why, sent, error: e.message };
     }
     await setMeta('syncError', e.message);
     _notify({ type: 'error', error: e.message });

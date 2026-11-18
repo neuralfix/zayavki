@@ -37,9 +37,9 @@ async function prefetchOcr() {
 }
 
 // Фото → холст в оттенках серого. mode 'bw' — ещё и чёрно-белый с лёгким сглаживанием (для мутных фото).
-async function _plateCanvas(blob, rotate, mode) {
+async function _plateCanvas(blob, rotate, mode, maxSide = 2200) {
   const bmp = await createImageBitmap(blob);
-  const k = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+  const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
   const w = Math.round(bmp.width * k); const h = Math.round(bmp.height * k);
   const c = document.createElement('canvas');
   const turn = rotate === 90 || rotate === 270;
@@ -281,4 +281,120 @@ async function _readLocal(blob, onStep) {
     }
     return best;
   } finally { _ocrProgress = null; }
+}
+
+// ---------- Пачкой: модели для старых заявок ----------
+// Каждое фото сначала читается прямо в телефоне, без интернета. В Яндекс уходит только то, что похоже
+// на шильдик и не похоже на договор, квитанцию или запчасть. Сомнение — не отправляем.
+const LAT2CYR = { A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О', P: 'Р', C: 'С', T: 'Т', X: 'Х', Y: 'У' };
+const SCAN_PRIVATE = /(ДОГОВОР|ЗАКАЗЧИК|ИСПОЛНИТЕЛ|ПАСПОРТ|ПОДПИС|(^|[^А-ЯЁ])Ф\.?\s?И\.?\s?О(?![А-ЯЁ])|КВИТАНЦ|СТОИМОСТ|ИТОГО|НАРЯД|КЛИЕНТ|ГАРАНТИЙН|ПОТРЕБИТЕЛ|ОПЛАТ|АКТ\s+ВЫП|ФАМИЛИ|ПРОЖИВА|ТЕЛЕФОН|ТЕЛ\.)/;
+const SCAN_PHONE = /(\+7|8)\D{0,3}9\d\d\D{0,3}\d{3}\D{0,2}\d{2}\D{0,2}\d{2}/;
+const SCAN_PART = /(COMPRESSOR|КОМПРЕССОР|EMBRACO|DANFOSS|SECOP|JIAXIPERA|HUAYI|DONPER|CUBIGEL|TECUMSEH|WANBAO|\bLBP\b|\bHBP\b|THERMOSTAT|ТЕРМОСТАТ|RANCO|\bATEA\b|\bRELAY\b|(^|[^А-ЯЁ])РЕЛЕ(?![А-ЯЁ])|\bPCB\b|WELLING|NIDEC|ASKOLL|LEILI|HANYU|PLASET|ТАЙМЕР)/i; // наклейки компрессора, насоса, мотора, платы
+const SCAN_PLATE = [OCR_KEY, OCR_TYPE_KEY, /\d\s?(V|В)\b|VAC|~\s?\d/i, /\d\s?(HZ|ГЦ)/i, /\d\s?(W|ВТ|KW|КВТ)\b/i, /\d\s?(KG|КГ)\b/i,
+  /R-?(600|134|12)A?\b/i, /(ХЛАДАГЕНТ|REFRIGERANT|КЛИМАТИЧ|CLIMAT|КЛАСС|CLASS)/i, /(MADE IN|СДЕЛАНО|ИЗГОТОВ|PRODUCED)/i, OCR_DEVICE,
+  /(НАПРЯЖ|ЧАСТОТ|МОЩНОСТ|ПОТРЕБЛ|ОБ[ЪЬ]?[ЕЁ]М|VOLUME|WEIGHT|ИЗОЛЯЦ|SERIAL|СЕРИЙН|S\/N)/i];
+
+// private — похоже на договор/документ клиента; part — наклейка запчасти; plate — шильдик техники
+function screenPlate(text) {
+  const t = String(text || '');
+  const cyr = t.toUpperCase().replace(/[ABEKMHOPCTXY]/g, (ch) => LAT2CYR[ch]);
+  if (SCAN_PRIVATE.test(cyr) || SCAN_PHONE.test(t)) return { kind: 'private', n: 0 };
+  if (SCAN_PART.test(t) || SCAN_PART.test(cyr)) return { kind: 'part', n: 0 };
+  const n = SCAN_PLATE.filter((re) => re.test(t)).length + (plateCandidates(t).brand ? 1 : 0);
+  return { kind: n >= 2 ? 'plate' : 'none', n };
+}
+
+// Проверка в телефоне. Фото могло быть снято боком — смотрим и повёрнутым.
+async function _screenLocal(blob) {
+  const w = await _getOcrWorker();
+  let best = { kind: 'none', n: 0 };
+  for (const rot of [0, 90, 270]) {
+    const { data } = await w.recognize(await _plateCanvas(blob, rot, null, 1400));
+    const v = screenPlate(data.text);
+    if (v.kind === 'private' || v.kind === 'part') return v;   // хоть в одном повороте похоже на договор — не отправляем
+    if (v.n > best.n) best = v;
+    if (rot === 0 && v.n >= 3) return v;                        // явный шильдик — дальше не крутим
+  }
+  return best.n >= 2 ? { kind: 'plate', n: best.n } : { kind: 'none', n: best.n };
+}
+
+// Заявки без модели и их фото, которые ещё не проверяли
+async function plateScanTargets() {
+  const st = (await getMeta('plateScan')) || {};
+  const checked = new Set(st.checked || []);
+  const orders = (await dbAll('orders')).filter((o) => !(o.model || '').trim());
+  const photos = await dbAll('photos');
+  const byOrder = new Map();
+  for (const p of photos) {
+    if (!p.blob || p.kind === 'contract' || checked.has(p.id)) continue;
+    if (!byOrder.has(p.orderId)) byOrder.set(p.orderId, []);
+    byOrder.get(p.orderId).push(p);
+  }
+  const list = orders.filter((o) => byOrder.has(o.id)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .map((o) => ({ id: o.id, photos: byOrder.get(o.id).sort((a, b) => a.createdAt - b.createdAt).map((p) => p.id) }));
+  return { list, photos: list.reduce((s, x) => s + x.photos.length, 0), auto: (await dbAll('orders')).filter((o) => o.modelAuto).length };
+}
+
+// Пройти все заявки без модели. onProgress(stats) — для полоски, stop() — true, если нажали «Стоп».
+async function scanOldPlates(onProgress, stop) {
+  const conf = await ocrCloudConf();
+  if (!conf) throw new Error('Сначала настройте распознавание Яндекса выше');
+  const st = (await getMeta('plateScan')) || {};
+  const checked = st.checked || [];
+  const s = { written: 0, sent: 0, private: 0, part: 0, none: 0, nomodel: 0, ...(st.stats || {}), done: 0 };
+  const { list, photos } = await plateScanTargets();
+  s.total = photos;
+  const save = () => setMeta('plateScan', { checked, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel } });
+  onProgress(s);
+  for (const item of list) {
+    let left = item.photos.length;
+    for (const pid of item.photos) {
+      while (document.hidden && !stop()) await new Promise((ok) => setTimeout(ok, 5000)); // свернули — пауза
+      if (stop()) { await save(); return { ...s, stopped: true }; }
+      const p = await dbGet('photos', pid);
+      const o = await dbGet('orders', item.id);
+      if (!o || (o.model || '').trim()) break;          // модель уже есть — остальные фото этой заявки не нужны
+      left--; s.done++;
+      if (!p || !p.blob) continue;
+      const v = await _screenLocal(p.blob);
+      if (v.kind !== 'plate') { s[v.kind]++; checked.push(pid); await save(); onProgress(s); continue; }
+      let text = null;
+      for (let tryN = 0; text === null; tryN++) {
+        try { text = await cloudOcrText(p.blob, conf); } catch (e) {
+          if (/Неверный ключ/.test(e.message) || tryN >= 3) { await save(); throw e; }
+          await new Promise((ok) => setTimeout(ok, 15000));
+        }
+      }
+      s.sent++; checked.push(pid);
+      const cv = screenPlate(text);
+      const r = plateCandidates(text);
+      const sure = cv.kind === 'plate' && r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));
+      if (!sure) { s.nomodel++; await save(); onProgress(s); continue; }
+      const fresh = await dbGet('orders', item.id);
+      if (fresh && !(fresh.model || '').trim()) {
+        Object.assign(fresh, { model: plateLabel(r.brand, r.models[0]), modelAuto: true, updatedAt: Date.now() });
+        await dbPut('orders', fresh); await markDirty();
+        s.written++;
+      }
+      await save(); onProgress(s);
+      break;
+    }
+    s.done += left;   // остальные фото заявки уже не нужны
+    onProgress(s);
+  }
+  await save();
+  return s;
+}
+
+// Убрать всё, что записано автоматически и не правилось вручную
+async function undoAutoModels() {
+  let n = 0;
+  for (const o of await dbAll('orders')) {
+    if (!o.modelAuto) continue;
+    o.model = ''; delete o.modelAuto; o.updatedAt = Date.now();
+    await dbPut('orders', o); n++;
+  }
+  await setMeta('plateScan', null);
+  if (n) await markDirty();
+  return n;
 }

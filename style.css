@@ -300,3 +300,16 @@ code.copy { display: block; padding: 10px; border-radius: 8px; background: var(-
 .war-row .input { width: 72px; flex: none; text-align: center; font-size: 17px; }
 .war-row .seg { margin: 0; flex: 1 1 140px; }
 .war-row .chip { flex: none; }
+
+/* Свёрнутые разделы на «Диске» */
+details.fold > summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary h2 { margin: 0; flex: 1; }
+details.fold > summary::after { content: '›'; font-size: 22px; line-height: 1; color: var(--muted); transition: transform .15s; }
+details.fold[open] > summary::after { transform: rotate(90deg); }
+details.fold[open] > summary { margin-bottom: 10px; }
+.fold-note { font-size: 13px; color: var(--muted); }
+/* Процент отправки на Диск */
+.dprog { margin-top: 10px; }
+.dprog-bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin-bottom: 4px; }
+.dprog-bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
