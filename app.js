@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.26'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.27'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -423,7 +423,12 @@ async function renderOrderForm(id, warrantyFromId) {
     for (const k of ['apt', 'entrance', 'floor']) $('[name=' + k + ']').value = l[k] || '';
     setAddrMore();
     const w = same.find(onWarranty);
-    const lastRepair = same.find((x) => x.status === 'closed');
+    // Ремонты в этой квартире: сначала тот, что на гарантии, потом свежие
+    const repairs = same.filter((x) => x.status === 'closed').sort((a, b) => (b === w) - (a === w));
+    const lastRepair = repairs[0];
+    // Разные жильцы (другой телефон или имя) — пусть мастер выберет, к какому ремонту гарантия
+    const who = (x) => digits(x.phone).slice(-10) || _norm(x.name);
+    const manyClients = new Set(repairs.map(who)).size > 1;
     const box = $('#addrHint');
     box.innerHTML = `<div class="client-hint${w ? ' warn' : ''}">
       <b>${l.apt ? 'Кв. ' + esc(l.apt) + ' — ' : ''}здесь уже были</b>${same.length > 1 ? ' (заявок: ' + same.length + ')' : ''}:
@@ -431,19 +436,30 @@ async function renderOrderForm(id, warrantyFromId) {
       <span class="muted">· №${l.num}, ${esc(fmtDate(l.createdAt, false))}${l.device ? ', ' + esc(l.device.toLowerCase()) : ''}${l.model ? ' ' + esc(l.model) : ''} — ${esc(STATUS[l.status].toLowerCase())}</span>
       ${w ? `<br><b>На гарантии до ${esc(new Date(warEndOf(w)).toLocaleDateString('ru-RU'))}</b> — №${w.num}${w.workDone ? ': ' + esc(w.workDone) : ''}` : ''}
       <div class="btns" style="margin-top:8px"><button type="button" class="btn sec" data-a="flatNew">Новая заявка</button>
-        ${lastRepair && !warrantyOf ? `<button type="button" class="btn sec" data-a="flatWar">Как гарантия</button>` : ''}</div></div>`;
-    const fillClient = () => {
+        ${lastRepair && !warrantyOf ? `<button type="button" class="btn sec" data-a="flatWar">${manyClients ? 'Как гарантия…' : 'Как гарантия к №' + lastRepair.num}</button>` : ''}</div></div>`;
+    // Имя, телефон и техника — всегда из одной заявки, чтобы не смешать двух жильцов
+    const fillClient = (r) => {
+      if (r.name) $('[name=name]').value = r.name;
+      if (r.phone) phoneIn.value = fmtPhone(r.phone);
+      if (r.device && device !== r.device) $$('#dev .chip').find((x) => x.dataset.v === r.device)?.click();
+      if (r.model) $('[name=model]').value = r.model;
+    };
+    $('[data-a=flatNew]', box).onclick = () => {
       if (l.name) $('[name=name]').value = l.name;
       if (l.phone) phoneIn.value = fmtPhone(l.phone);
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
       if (!$('[name=model]').value && l.model) $('[name=model]').value = l.model;
+      box.innerHTML = ''; showClient();
     };
-    $('[data-a=flatNew]', box).onclick = () => { fillClient(); box.innerHTML = ''; showClient(); };
     const fw = $('[data-a=flatWar]', box); if (fw) fw.onclick = () => {
-      const base = w || lastRepair;
-      fillClient();
-      if (base.device && device !== base.device) $$('#dev .chip').find((x) => x.dataset.v === base.device)?.click();
-      if (base.model) $('[name=model]').value = base.model;
+      if (!manyClients) return asWarranty(lastRepair);
+      box.innerHTML = `<div class="client-hint"><b>Гарантия к какому ремонту?</b> Здесь были разные клиенты.
+        <div class="btns col" style="margin-top:8px">${repairs.slice(0, 6).map((x, i) => `<button type="button" class="btn sec" data-i="${i}">
+          №${x.num} · ${esc(fmtDate(x.closedAt || x.createdAt, false))}<small>${esc([x.name || 'без имени', x.phone, [x.device, x.model].filter(Boolean).join(' ')].filter(Boolean).join(' · '))}${x === w ? ' · на гарантии' : ''}</small></button>`).join('')}</div></div>`;
+      $$('[data-i]', box).forEach((b) => b.onclick = () => asWarranty(repairs[+b.dataset.i]));
+    };
+    const asWarranty = (base) => {
+      fillClient(base);
       warrantyOf = base.id;
       $('#wbanner').textContent = 'Заявка по гарантии к №' + base.num + (onWarranty(base)
         ? ' (гарантия до ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') + ')'

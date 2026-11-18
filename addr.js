@@ -16,10 +16,21 @@ const _TYPE_WORDS = new Set(['ул', 'улица', 'пр', 'пр-т', 'прос�
 // Справочник: свой из комплекта приложения или скачанный кнопкой «Обновить справочник» — берётся тот, что новее
 const STREETS_CACHE = 'zayavki-streets';
 let _streetsMeta = null;  // { date, src, streets, houses }
+// Справочник целый: есть места и улицы, у каждой улицы — название, номер места из списка и дома строкой
+function _validStreets(d) {
+  return !!d && Array.isArray(d.loc) && d.loc.length > 0 && Array.isArray(d.s) && d.s.length >= 100 &&
+    d.s.every((x) => Array.isArray(x) && typeof x[0] === 'string' && Number.isInteger(x[1]) && x[1] >= 0 && x[1] < d.loc.length &&
+      d.loc[x[1]] != null && (x[2] == null || typeof x[2] === 'string'));
+}
 async function _readStreets() {
   const own = await fetch('streets.json').then((r) => r.json());
   let got = null;
-  try { const r = await (await caches.open(STREETS_CACHE)).match('streets.json'); if (r) got = await r.json(); } catch (e) { /* нет */ }
+  try {
+    const c = await caches.open(STREETS_CACHE);
+    const r = await c.match('streets.json');
+    if (r) got = await r.json();
+    if (got && !_validStreets(got)) { got = null; await c.delete('streets.json'); }   // испорченную копию — выбросить
+  } catch (e) { got = null; }
   return got && (got.date || '') > (own.date || '') ? got : own;
 }
 function _setMeta(d) {
@@ -33,7 +44,7 @@ async function updateStreets() {
   const r = await fetch('streets.json?fresh=1', { cache: 'no-cache' });
   if (!r.ok) throw new Error('Сайт не ответил (' + r.status + ')');
   const d = await r.clone().json();
-  if (!Array.isArray(d.s) || d.s.length < 100) throw new Error('Справочник на сайте повреждён');
+  if (!_validStreets(d)) throw new Error('Справочник на сайте повреждён — оставлен прежний');
   if ((d.date || '') <= (before.date || '')) return { updated: false, before, after: before };
   await (await caches.open(STREETS_CACHE)).put('streets.json', r);
   _streets = null; _streetsLoading = null;
