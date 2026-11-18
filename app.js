@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.22'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.23'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -119,7 +119,7 @@ async function updateSyncBadge() {
   const s = await syncStatus();
   const pending = s.pendingPhotos + (s.dataPending ? 1 : 0) + s.pendingDeletes;
   let icon = '☁ ✓', cls = '', alert = '';
-  if (!s.connected) { icon = '☁ !'; cls = 'warn'; alert = 'Диск не подключён — копии заявок не сохраняются'; }
+  if (!s.connected) { icon = '☁ !'; cls = 'warn'; alert = 'Автокопии на Яндекс Диск выключены. Заявки сохраняются в телефоне'; }
   else if (!s.hasKey) { icon = '🔒'; cls = 'warn'; alert = 'Задайте пароль — без него на Диск ничего не уходит'; }
   else if (s.paused) { icon = '☁ ⏸'; cls = 'warn'; alert = 'Отправка на Диск на паузе — выберите, какую копию оставить'; }
   else if (s.error) { icon = '☁ !'; cls = 'err'; alert = 'Ошибка Диска: ' + s.error; }
@@ -263,7 +263,7 @@ function todayItem(o, timeText) {
   const flat = o.address ? [o.apt ? 'кв. ' + o.apt : '', o.entrance ? 'под. ' + o.entrance : '', o.floor ? 'эт. ' + o.floor : ''].filter(Boolean).join(', ') : '';
   const sub = [o.device, o.address ? o.name : '', o.problem].filter(Boolean).join(' · ');
   return `<div class="item today-item">
-    <a class="t-main" href="#/order/${o.id}">
+    <a class="t-main${timeText && timeText.length > 5 ? ' t-stack' : ''}" href="#/order/${o.id}">
       ${timeText ? `<b class="t-time">${esc(timeText)}</b>` : ''}
       <div class="t-body">
         <div class="t-addr">${esc(street)}${flat ? ` <span class="t-flat">${esc(flat)}</span>` : ''}
@@ -456,6 +456,7 @@ async function renderOrderForm(id, warrantyFromId) {
     Object.assign(rec, data, { device, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null, updatedAt: now });
     if (warrantyOf) { rec.isWarranty = true; rec.warrantyOf = warrantyOf; }
     if (o && o.modelAuto && rec.model !== o.model) delete rec.modelAuto;   // поправили вручную — уже не «авто»
+    if (o && o.deviceAuto && rec.device !== o.device) delete rec.deviceAuto;
     await dbPut('orders', rec);
     toast(o ? 'Сохранено' : 'Заявка №' + rec.num + ' создана');
     changed();
@@ -549,7 +550,7 @@ async function renderOrder(id) {
     </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
-      <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}
+      <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>${o.deviceAuto ? ' <span class="muted small" title="Вид техники вписан автоматически по фото шильдика">· авто</span>' : ''}` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : ''}
           ${o.model ? `<div class="ord-model">${esc(o.model)}${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}</div>` : ''}</div>
         <span class="badge ${o.status}">${STATUS[o.status]}</span>${icons}</div>
       <dl class="kv">
@@ -651,20 +652,35 @@ async function photoWidget(o, box) {
     const picked = inp.files.length; inp.value = '';
     if (!files.length) { if (picked) toast('Это не фото'); return; }
     toast('Сохраняю фото…');
+    const ids = [];
     for (const f of files) {
       // крупнее и чётче, чтобы текст договора читался
       const blob = await compressImage(f, 2000, 0.8);
-      await dbPut('photos', { id: uid(), orderId: o.id, kind: 'extra', blob, createdAt: Date.now(), uploaded: 0 });
+      const id = uid(); ids.push(id);
+      await dbPut('photos', { id, orderId: o.id, kind: 'extra', blob, createdAt: Date.now(), uploaded: 0 });
     }
     toast('Фото сохранено: ' + files.length);
     await photoWidget(o, box);
     changed();
+    autoPlateAfterAdd(o.id, ids);
   });
   $$('.ph[data-id]', box).forEach((b) => b.onclick = () => openViewer(b.dataset.id, o, box));
   $$('.ph[data-remote]', box).forEach((b) => b.onclick = async () => {
     b.disabled = true; b.textContent = 'Загружаю…';
     try { await fetchPhoto(b.dataset.remote); await photoWidget(o, box); } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = 'на Диске<br>открыть'; }
   });
+}
+
+// Добавили фото, а модели или вида техники нет — ищем шильдик сами, в фоне. Записанное видно сразу.
+function autoPlateAfterAdd(orderId, ids) {
+  if (plateScanRun) return;   // идёт «Распознать все» — оно само дойдёт
+  let said = false;
+  autoPlateOnAdd(orderId, ids, (t) => { if (!said) { said = true; toast(t, 2500); } }).then((got) => {
+    if (!got) return;
+    toast('С шильдика записано: ' + [got.device, got.model].filter(Boolean).join(', '), 5000);
+    changed();
+    if (location.hash === '#/order/' + orderId) route();   // на форме закрытия не перерисовываем — там вводят суммы
+  }).catch((e) => toast('Шильдик не прочитан: ' + e.message, 5000));
 }
 
 // Просмотр фото заявки: листать пальцем влево-вправо (или стрелками), счётчик «3 / 7»
@@ -729,22 +745,26 @@ async function openViewer(photoId, o, box) {
       const r = await readPlate(list[i].blob, (t) => { btn.textContent = t; });
       reset();
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
-      const res = await plateDialog(r, fresh.model || '');
-      if (!res || !res.model) return;
-      Object.assign(fresh, { model: res.model, updatedAt: Date.now() }); delete fresh.modelAuto;
+      const res = await plateDialog(r, fresh.model || '', fresh.device);
+      const setDev = res && res.dev === 'on' && r.device && !fresh.device;
+      if (!res || (!res.model && !setDev)) return;
+      if (res.model) { fresh.model = res.model; delete fresh.modelAuto; }
+      if (setDev) { fresh.device = r.device; delete fresh.deviceAuto; }
+      fresh.updatedAt = Date.now();
       await dbPut('orders', fresh);
-      o.model = res.model;
-      toast('Модель записана: ' + res.model); changed();
+      Object.assign(o, { model: fresh.model, device: fresh.device });
+      toast([setDev ? fresh.device : '', res.model ? 'модель ' + res.model : ''].filter(Boolean).join(', ').replace(/^./, (c) => c.toUpperCase()) + ' — записано'); changed();
       close();
       if (location.hash.startsWith('#/order/')) route();
     } catch (err) { console.error(err); toast(err.message || 'Не получилось прочитать', 4000); reset(); }
   };
 }
 
-function plateDialog(r, cur) {
+function plateDialog(r, cur, curDevice) {
   const guess = r.models[0] ? plateLabel(r.brand, r.models[0]) : r.brand;
   return formDialog('Модель с шильдика', `
     ${r.note ? `<p class="small warn-text" style="margin-top:0">${esc(r.note)}</p>` : ''}
+    ${r.device && !curDevice ? `<label class="check" style="margin-bottom:10px"><input type="checkbox" name="dev" checked> Вписать вид техники: <b>${esc(r.device)}</b></label>` : ''}
     ${r.models.length ? `<p class="note" style="margin-top:0">Нажмите подходящую и сверьте буквы и цифры с фото:</p>
       <div class="chips" style="margin-bottom:10px">${r.models.map((m) => `<button type="button" class="chip" data-m="${esc(plateLabel(r.brand, m))}">${esc(m)}</button>`).join('')}</div>`
       : '<p class="note" style="margin-top:0">Модель не нашлась. Выберите строку из текста ниже или впишите вручную. Лучше всего читается снимок прямо, без блика.</p>'}
@@ -1146,7 +1166,7 @@ let plateScanRun = null;   // идёт проверка — здесь цифр�
 function scanProgHtml(s) {
   const pct = s.total ? Math.floor(s.done * 100 / s.total) : 0;
   return `<div class="dprog"><div class="dprog-bar"><i style="width:${pct}%"></i></div>
-    <div class="small"><b>${pct}%</b> · проверено фото ${s.done} из ${s.total} · вписано моделей: <b>${s.written}</b></div>
+    <div class="small"><b>${pct}%</b> · проверено фото ${s.done} из ${s.total} · вписано моделей: <b>${s.written}</b>${s.devices ? ', видов техники: ' + s.devices : ''}</div>
     <div class="small muted">в Яндекс отправлено ${s.sent} · пропущено: договоры и документы ${s.private}, запчасти ${s.part}, не шильдик ${s.none}${s.nomodel ? ', модель не найдена ' + s.nomodel : ''}</div></div>`;
 }
 
@@ -1241,6 +1261,7 @@ async function renderSettings() {
   const ocrUrl = (await getMeta('ocrUrl')) || '';
   const ocrKey = (await getMeta('ocrKey')) || '';
   const scanInfo = ocrUrl && ocrKey ? await plateScanTargets() : { list: [], photos: 0, auto: 0 };
+  const autoPlate = (await getMeta('autoPlate')) !== false;
 
   view.innerHTML = `
     ${s.hasKey ? `<div class="card"><h2>Яндекс Диск</h2>${disk}</div>
@@ -1279,6 +1300,8 @@ async function renderSettings() {
         <label class="small muted show" style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="ocrShow"> показать ключ
           <span id="ocrLen" style="margin-left:auto"></span></label></div>
       <div class="btns"><button class="btn" id="ocrSave">Сохранить</button><button class="btn sec" id="ocrTest">Проверить</button></div>
+      ${ocrUrl && ocrKey ? `<label class="check" style="margin-top:12px"><input type="checkbox" id="autoPlate" ${autoPlate ? 'checked' : ''}> Сразу искать шильдик в новых фото заявки</label>
+      <p class="note" style="margin-top:4px">Если в заявке нет модели или вида техники, приложение само найдёт шильдик среди добавленных фото и впишет их. Договоры и прочее отсеиваются так же, как в «Распознать все».</p>` : ''}
       <p class="note">${ocrUrl && ocrKey ? '✓ Настроено.' : 'Не настроено — тогда фото читается прямо в телефоне, но заметно хуже.'}
         Ключ хранится только в этом телефоне и на Диск не отправляется.</p>
       ${ocrUrl && ocrKey ? `<div style="border-top:1px solid var(--line);margin:14px 0 10px"></div>
@@ -1338,6 +1361,7 @@ async function renderSettings() {
     } catch (err) { toast(err.message, 6000); }
     b.disabled = false; b.textContent = 'Проверить';
   };
+  const ap = $('#autoPlate'); if (ap) ap.onchange = async () => { await setMeta('autoPlate', ap.checked); toast(ap.checked ? 'Включено' : 'Выключено'); };
   const sr = $('#scanRun'); if (sr) sr.onclick = () => { if (plateScanRun) plateScanRun.stopping = true; else runPlateScan(); };
   const su = $('#scanUndo'); if (su) su.onclick = async () => {
     if (!confirm('Стереть модели, которые приложение вписало само (если вы их не правили)?')) return;
@@ -1757,6 +1781,10 @@ async function start() {
   $('#backBtn').onclick = () => (history.length > 1 ? history.back() : go('#/today'));
   try { await tidyPhones(); } catch (e) { console.warn('phones', e); }
   setTimeout(prefetchOcr, 20 * 1000); // распознавание шильдика — скачать заранее, чтобы работало без сети
+  // Пока печатают (клавиатура открыта), нижние панели убираем, чтобы не закрывали поле
+  const typingEl = (el) => el && el.matches && el.matches('textarea, select, input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=button])');
+  document.addEventListener('focusin', (e) => { if (typingEl(e.target)) document.body.classList.add('typing'); });
+  document.addEventListener('focusout', () => setTimeout(() => { if (!typingEl(document.activeElement)) document.body.classList.remove('typing'); }, 50));
   // Распознавание моделей прервали обновлением или закрытием — продолжаем с того же места
   setTimeout(async () => {
     const ps = await getMeta('plateScan');

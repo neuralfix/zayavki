@@ -82,8 +82,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .today-item .t-main:active { background: var(--accent-2); }
 .today-item .t-time { flex: none; font-size: 20px; line-height: 1.2; color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .today-item .t-body { min-width: 0; }
-.today-item .t-addr { font-size: 17px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
-.today-item .t-flat { font-size: 14px; font-weight: 400; color: var(--muted); white-space: nowrap; }
+.today-item .t-addr { font-size: 17px; font-weight: 650; line-height: 1.25; overflow-wrap: break-word; hyphens: auto; }
+.today-item .t-flat { font-size: 14px; font-weight: 400; color: var(--muted); }
+.today-item .t-main.t-stack { flex-direction: column; gap: 2px; }   /* просрочено: «12 нояб, 14:00» строкой над адресом */
+.today-item .t-stack .t-time { font-size: 15px; }
 .today-item .t-sub { margin-top: 3px; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .today-item .t-act { flex: none; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 8px 10px 8px 0; }
 .ico { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: var(--accent-2); color: var(--accent); }
@@ -358,3 +360,7 @@ details.fold[open] > summary { margin-bottom: 10px; }
 .copy-ico { border: 0; background: none; font-size: 17px; padding: 0 4px; vertical-align: -1px; cursor: pointer; }
 .ord-meta { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 .more-act details.tg { margin-top: 10px; }
+
+/* Клавиатура открыта: нижние панели не закрывают поле ввода */
+body.typing .tabs { display: none; }
+body.typing .close-bar { position: static; box-shadow: none; }

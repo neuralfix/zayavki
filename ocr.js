@@ -183,6 +183,7 @@ function plateCandidates(text) {
     }
     // строка, где только модель: «ITF 020 S», «ES 15 A», «HBD1201.3XNFH»
     if (l.length <= 16 && tokens.length <= 3 && /\d/.test(l) && /[A-Za-zА-Яа-я]/.test(l) && !ser && !std &&
+      !tokens.some((x) => /^(\d+([.,]\d+)?(V|VAC|W|KW|HZ|KG|ГЦ|ВТ|КГ)|\d{2,3}[-/~]\d{2,3}V|R-?\d{2,3}A?)$/i.test(_lat(x))) &&   // «220V 50Hz R600a» — это характеристики, не модель
       !OCR_UNIT_WORD.test(_lat(tokens[0])) && !_brandOf(tokens[0])) add(l, 3 + keyNext + devNext);
     keyNext = key && !/\d/.test(l.slice(keyEnd)) ? 3 : 0;  // «Модель/Үлгісі» — а сама модель на следующей строке
     devNext = dev && !/\d/.test(l.slice(devEnd)) ? 2 : 0;  // «ХОЛОДИЛЬНИК» — модель строкой ниже
@@ -191,7 +192,27 @@ function plateCandidates(text) {
   const models = [...score.entries()].filter(([, v]) => v > -1).sort((a, b) => b[1] - a[1]).map(([t]) => t)
     .filter((t, i, arr) => !arr.slice(0, i).some((x) => x.replace(/\W/g, '').includes(t.replace(/\W/g, ''))))
     .filter((t) => !B || _lat(t) !== B).slice(0, 4);
-  return { brand, models, lines: lines.slice(0, 16) };
+  return { brand, models, lines: lines.slice(0, 16), device: plateDevice(text) };
+}
+
+// Вид техники по словам на шильдике. Посудомойка и прочее — не угадываем.
+const PLATE_DEVICE = [
+  ['Холодильник', /(ХОЛОДИЛЬН|МОРОЗИЛЬН|REFRIGERAT|FRIDGE|FREEZER|K[UÜ]HL)/i],
+  ['Стиральная машина', /(СТИРАЛЬН|WASHING\s*MACHINE|WASCHMASCHINE|LAVATRICE|LAVE-?LINGE|(^|[^A-Z])WASHER)/i],
+  ['Телевизор', /(ТЕЛЕВИЗ|TELEVISION|(LED|LCD|SMART|COLOU?R)\s*TV(?![A-Z]))/i],
+];
+function plateDevice(text) {
+  const raw = String(text || '');
+  if (/(DISH\s*WASHER|ПОСУДОМО)/i.test(raw)) return '';
+  const cyr = raw.toUpperCase().replace(/[ABEKMHOPCTXY]/g, (ch) => ({ A: 'А', B: 'В', E: 'Е', K: 'К', M: 'М', H: 'Н', O: 'О', P: 'Р', C: 'С', T: 'Т', X: 'Х', Y: 'У' })[ch]);
+  let best = '', at = Infinity;
+  for (const [name, re] of PLATE_DEVICE) {
+    for (const t of [raw, cyr]) {   // местное чтение путает буквы: «XOЛOДИЛЬHИK» латиницей
+      const m = t.match(re);
+      if (m && m.index < at) { at = m.index; best = name; }
+    }
+  }
+  return best;
 }
 
 // Марка + модель для записи в заявку (без повтора: «STINOL-104», а не «Stinol STINOL-104»)
@@ -335,7 +356,7 @@ async function plateScanTargets() {
   }
   const list = orders.filter((o) => byOrder.has(o.id)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .map((o) => ({ id: o.id, photos: byOrder.get(o.id).sort((a, b) => a.createdAt - b.createdAt).map((p) => p.id) }));
-  return { list, photos: list.reduce((s, x) => s + x.photos.length, 0), auto: (await dbAll('orders')).filter((o) => o.modelAuto).length };
+  return { list, photos: list.reduce((s, x) => s + x.photos.length, 0), auto: (await dbAll('orders')).filter((o) => o.modelAuto || o.deviceAuto).length };
 }
 
 // Пройти все заявки без модели. onProgress(stats) — для полоски, stop() — true, если нажали «Стоп».
@@ -348,7 +369,7 @@ async function scanOldPlates(onProgress, stop) {
   const { list, photos } = await plateScanTargets();
   s.total = s.done + photos;   // процент — с учётом проверенного в прошлые разы
   // running: true — если приложение закрыли посреди проверки, при следующем запуске оно продолжит само
-  const save = (running = true) => setMeta('plateScan', { checked, running, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel, done: s.done } });
+  const save = (running = true) => setMeta('plateScan', { checked, running, stats: { written: s.written, sent: s.sent, private: s.private, part: s.part, none: s.none, nomodel: s.nomodel, devices: s.devices || 0, done: s.done } });
   await save();
   onProgress(s);
   for (const item of list) {
@@ -373,6 +394,10 @@ async function scanOldPlates(onProgress, stop) {
       s.sent++; checked.push(pid);
       const cv = screenPlate(text);
       const r = plateCandidates(text);
+      if (cv.kind === 'plate' && r.device) {   // вид техники — если в заявке не указан
+        const fo = await dbGet('orders', item.id);
+        if (fo && !fo.device) { fo.device = r.device; fo.deviceAuto = true; fo.updatedAt = Date.now(); await dbPut('orders', fo); await markDirty(); s.devices = (s.devices || 0) + 1; }
+      }
       const sure = cv.kind === 'plate' && r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));
       if (!sure) { s.nomodel++; await save(); onProgress(s); continue; }
       const fresh = await dbGet('orders', item.id);
@@ -395,11 +420,55 @@ async function scanOldPlates(onProgress, stop) {
 async function undoAutoModels() {
   let n = 0;
   for (const o of await dbAll('orders')) {
-    if (!o.modelAuto) continue;
-    o.model = ''; delete o.modelAuto; o.updatedAt = Date.now();
+    if (!o.modelAuto && !o.deviceAuto) continue;
+    if (o.modelAuto) { o.model = ''; delete o.modelAuto; }
+    if (o.deviceAuto) { o.device = ''; delete o.deviceAuto; }
+    o.updatedAt = Date.now();
     await dbPut('orders', o); n++;
   }
   await setMeta('plateScan', null);
   if (n) await markDirty();
   return n;
+}
+
+// ---------- Шильдик сразу при добавлении фото ----------
+// Новые фото заявки, где нет модели или вида техники: телефон сам ищет среди них шильдик (договоры
+// и прочее отсеиваются так же, как в «Распознать все»), найденный читает Яндекс. Записывается только пустое.
+let _autoPlateQueue = Promise.resolve();
+function autoPlateOnAdd(orderId, photoIds, onStep) {
+  const run = _autoPlateQueue.then(() => _autoPlate(orderId, photoIds, onStep));
+  _autoPlateQueue = run.catch(() => null);
+  return run;
+}
+
+async function _autoPlate(orderId, photoIds, onStep) {
+  const conf = await ocrCloudConf();
+  if (!conf || !navigator.onLine || (await getMeta('autoPlate')) === false) return null;
+  const o0 = await dbGet('orders', orderId);
+  if (!o0 || ((o0.model || '').trim() && o0.device)) return null;
+  const got = {};
+  const mark = async (pid) => {   // пакетная проверка это фото повторно не возьмёт
+    const st = (await getMeta('plateScan')) || {};
+    await setMeta('plateScan', { ...st, checked: [...(st.checked || []), pid] });
+  };
+  for (const pid of photoIds) {
+    const p = await dbGet('photos', pid);
+    if (!p || !p.blob) continue;
+    onStep && onStep('Ищу шильдик на фото…');
+    const v = await _screenLocal(p.blob);
+    await mark(pid);
+    if (v.kind !== 'plate') continue;
+    onStep && onStep('Читаю шильдик…');
+    const text = await cloudOcrText(p.blob, conf);
+    if (screenPlate(text).kind !== 'plate') continue;
+    const r = plateCandidates(text);
+    const o = await dbGet('orders', orderId);
+    if (!o) return null;
+    if (!o.device && r.device) { o.device = r.device; o.deviceAuto = true; got.device = r.device; }
+    const sure = r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));
+    if (!(o.model || '').trim() && sure) { o.model = plateLabel(r.brand, r.models[0]); o.modelAuto = true; got.model = o.model; }
+    if (got.device || got.model) { o.updatedAt = Date.now(); await dbPut('orders', o); await markDirty(); }
+    if ((o.model || '').trim() && o.device) break;   // всё заполнено — остальные фото не нужны
+  }
+  return got.device || got.model ? got : null;
 }
