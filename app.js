@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.30'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.31'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -172,7 +172,10 @@ const sdDays = (o) => (o.sd?.at ? Math.floor((Date.now() - o.sd.at) / 864e5) : 0
 const sdLate = (o) => o.status === 'sd' && sdDays(o) >= SD_LATE_DAYS;
 const sdLine = (o) => o.sd ? ['на СД с ' + dayShort(o.sd.at), o.sd.what, o.sd.advance ? 'аванс ' + money(o.sd.advance) : ''].filter(Boolean).join(' · ') : '';
 // Для Яндекс Карт: улица Уфы → «Уфа, …», село района («Миловка, ул. …») → «Уфимский район, …». Без квартиры.
-const mapsQuery = (o) => (/^[А-ЯЁA-Z][^,]*,/.test(o.address) && !/^(ул|улица|пр|пр-т|проспект|пер|переулок|б-р|ш|шоссе|туп|пл|наб|мкр)(?=[\s.,]|$)/i.test(o.address) ? 'Уфимский район, ' : 'Уфа, ') + o.address;
+// Есть подъезд — «…, подъезд 2»: Яндекс ведёт прямо к нему (если знает подъезды этого дома, иначе — к дому).
+const entranceNum = (o) => (String(o.entrance || '').match(/\d+/) || [''])[0];
+const mapsQuery = (o) => (/^[А-ЯЁA-Z][^,]*,/.test(o.address) && !/^(ул|улица|пр|пр-т|проспект|пер|переулок|б-р|ш|шоссе|туп|пл|наб|мкр)(?=[\s.,]|$)/i.test(o.address) ? 'Уфимский район, ' : 'Уфа, ') + o.address +
+  (entranceNum(o) ? ', подъезд ' + entranceNum(o) : '');
 // Android: сразу Яндекс Навигатор; если его нет — Яндекс Карты. На компьютере — Карты.
 function routeHref(o) {
   const q = mapsQuery(o);
