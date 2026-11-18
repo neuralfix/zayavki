@@ -32,6 +32,11 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 [hidden] { display: none !important; }
 html, body { margin: 0; }
+/* Случайное касание по тексту не выделяет слово — и Chrome не открывает поиск Google снизу.
+   Долгое нажатие на фото и ссылки не вызывает меню Chrome (с поиском по картинке).
+   В полях ввода выделять и вставлять можно как обычно. Копировать адрес — касанием по нему или 📋. */
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea, select, [contenteditable] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 body {
   background: var(--bg);
   color: var(--text);

@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.29'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.30'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -1214,11 +1214,7 @@ function updateDiskProgress(done, all) {
 async function sendAll() {
   if (sendingAll) return;
   sendingAll = true;
-  let lock = null;
-  const takeLock = async () => { try { if (!lock || lock.released) lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ } };
-  await takeLock();
-  const onVis = () => { if (!document.hidden) takeLock(); };
-  document.addEventListener('visibilitychange', onVis);
+  // Экран включённым не держим: мешало датчику у уха во время звонка. Свернули — отправка подождёт возвращения.
   await setMeta('syncError', null);
   renderSettings();
   let r, fails = 0;
@@ -1235,8 +1231,6 @@ async function sendAll() {
     }
   } finally {
     sendingAll = false;
-    document.removeEventListener('visibilitychange', onVis);
-    try { lock && lock.release(); } catch (e) { /* пусто */ }
   }
   toast(syncMessage(r));
   updateSyncBadge();
@@ -1560,7 +1554,6 @@ async function renderSettings() {
     if (!todo.length) { toast('Здесь нет фото из импорта (или они уже добавлены)', 4000); return; }
     const label = btn.querySelector('span') || btn; const was = label.textContent;
     btn.classList.add('busy');
-    let lock = null; try { lock = await navigator.wakeLock?.request('screen'); } catch (e) { /* экран может погаснуть */ }
     let done = 0;
     try {
       for (const f of todo) {
@@ -1579,7 +1572,6 @@ async function renderSettings() {
       }
     } finally {
       await setMeta('tgPhotoMap', map);
-      try { lock && lock.release(); } catch (e) { /* пусто */ }
       btn.classList.remove('busy'); label.textContent = was;
     }
     await changed();
