@@ -19,7 +19,8 @@ function fmtPhone(s) {
   if (d.length !== 10) return raw;
   return '+7 (' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6, 8) + '-' + d.slice(8);
 }
-const PHONE_RE = /(?:\+7|8)?[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/;
+// Номер не начинается с пробела: иначе в «кв 12, 89005551234» бралось « 8900555123» без последней цифры
+const PHONE_RE = /(?<!\d)(?:(?:\+7|8)[\s(-]*|\(?)\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/;
 const telHref = (phone) => 'tel:' + String(phone).replace(/[^\d+]/g, '');
 
 // Строка для имени контакта в телефонной книге: «ХК Ленина 12-34 Иван 11.11.26»
@@ -49,7 +50,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.32'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.33'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -338,15 +339,11 @@ async function renderOrderForm(id, warrantyFromId) {
   let warrantyOf = v.warrantyOf || null;
   view.innerHTML = `
     <form id="f" autocomplete="off">
-      ${!o && !src ? '<button type="button" class="btn sec" id="pasteOrder" style="margin-bottom:12px">📋 Вставить заявку из сообщения</button>' : ''}
-      <div class="field"><label>Тип заявки <span class="muted" id="kindNote"></span></label>
-        <div class="chips" id="kind">${KINDS.map(([k, t]) => `<button type="button" class="chip ${kindOf(v) === k ? 'on' : ''}" data-v="${k}">${t}</button>`).join('')}</div></div>
       <div class="client-hint warn" id="wbanner" ${v.isWarranty ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
       <div class="field"><label>Телефон</label>
         <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
           <button type="button" class="btn sec" id="pastePh">📋 Вставить</button></div>
         <div id="client"></div></div>
-      <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
       <div class="addr-row">
         <div class="field"><label>Улица, дом</label><input class="input" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
         <div class="field"><label>Кв.</label><input class="input" name="apt" value="${esc(v.apt)}" inputmode="numeric"></div>
@@ -357,6 +354,7 @@ async function renderOrderForm(id, warrantyFromId) {
         <div class="field"><label>Подъезд</label><input class="input" name="entrance" value="${esc(v.entrance)}" inputmode="numeric"></div>
         <div class="field"><label>Этаж</label><input class="input" name="floor" value="${esc(v.floor)}" inputmode="numeric"></div>
       </div>
+      <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
       <div class="field"><label>Техника</label>
         <div class="chips" id="dev">${DEVICES.map((d) => `<button type="button" class="chip ${v.device === d ? 'on' : ''}" data-v="${d}">${d}</button>`).join('')}</div>
       </div>
@@ -366,7 +364,10 @@ async function renderOrderForm(id, warrantyFromId) {
         <input class="input" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}">
         <div id="conflicts"></div></div>
       <div class="field"><label>Заметки</label><textarea class="input" name="notes">${esc(v.notes)}</textarea></div>
+      <div class="field"><label>Тип заявки <span class="muted" id="kindNote"></span></label>
+        <div class="chips" id="kind">${KINDS.map(([k, t]) => `<button type="button" class="chip ${kindOf(v) === k ? 'on' : ''}" data-v="${k}">${t}</button>`).join('')}</div></div>
       <button class="btn" type="submit">${o ? 'Сохранить' : 'Создать заявку'}</button>
+      ${!o && !src ? '<button type="button" class="link small" id="pasteOrder" style="margin-top:4px">📋 Вставить заявку из сообщения</button>' : ''}
     </form>`;
   // «Создать» / «Сохранить» — ещё и в шапке: она всегда видна, листать вниз во время разговора не нужно
   const ts = $('#topSave');
