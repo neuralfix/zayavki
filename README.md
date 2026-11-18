@@ -18,8 +18,10 @@
   python -I tools/gar_remote.py get 02 .claude/gar        # только файлы Башкортостана, ~230 МБ из архива ~58 ГБ
   python -I tools/build_streets_gar.py .claude/gar tools/streets_osm.json streets.json
   ```
-  затем закоммитить `streets.json`. Это же делает GitHub сам 5-го числа каждого месяца
-  (`.github/workflows/streets.yml`, вручную: Actions → «Справочник улиц» → Run workflow); коммитит, только если база новая.
+  затем закоммитить `streets.json`. Это же раз в месяц делает сам компьютер мастера: задача Планировщика Windows
+  «Справочник улиц» запускает `tools/streets_auto.py` в отдельной копии проекта (`%USERPROFILE%\.zayavki-streets\repo`)
+  и отправляет `streets.json`, только если у ФНС база новее и справочник прошёл проверку. Журнал: `%USERPROFILE%\.zayavki-streets\log.txt`.
+  На GitHub так сделать нельзя: сайт ФНС не отвечает зарубежным серверам.
   В приложении: «Диск» → «Справочник улиц» → «Проверить обновление справочника».
   Старая сборка только из OSM: `tools/overpass_fetch.py`, `tools/build_streets.py`.
 - **Импорт из Telegram** сделан один раз и с версии 1.25 из приложения убран. Если к старым заявкам не дошли фото,
