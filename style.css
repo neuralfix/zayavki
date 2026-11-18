@@ -58,7 +58,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .sync.warn { background: #f0b84f; color: #2b1d00; }
 .sync.err { background: #ff8a80; color: #3b0400; }
-.clock { flex: none; font-size: 14px; opacity: .92; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.clock { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; opacity: .95; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.clock .c-d { font-size: 12px; }
+.clock .c-t { font-size: 15px; font-weight: 600; }
 .top-r { flex: none; display: flex; justify-content: flex-end; }
 .top-r .sync { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
 /* Предупреждение Диска — отдельной строкой под шапкой */
@@ -364,3 +366,6 @@ details.fold[open] > summary { margin-bottom: 10px; }
 /* Клавиатура открыта: нижние панели не закрывают поле ввода */
 body.typing .tabs { display: none; }
 body.typing .close-bar { position: static; box-shadow: none; }
+
+/* Отчёт заявки: что входит в расходы — мелко под строкой «Расходы» */
+.stat .stat-note { grid-column: 1 / -1; margin-top: -2px; font-size: 13px; color: var(--muted); }

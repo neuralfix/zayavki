@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.23'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.24'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -506,8 +506,9 @@ async function renderOrder(id) {
     report = `<div class="card">
       <div class="row card-head"><h2 class="grow">Отчёт · ${esc(fmtDate(o.closedAt, false))}</h2><a class="link small" href="#/close/${o.id}">Изменить</a></div>
       <div class="stat">
-        <span>Взял</span><b>${money(o.income)}</b>
-        ${(o.costs || []).map((c) => `<span class="muted">− ${esc(c.name || 'расход')}</span><span class="muted">${money(c.amount)}</span>`).join('')}
+        <span>Оплата клиента</span><b>${money(o.income)}</b>
+        ${(o.costs || []).length ? `<span>Расходы</span><span>− ${money(orderCosts(o))}</span>
+        <div class="stat-note">${(o.costs || []).map((c) => esc(c.name || 'расход') + ((o.costs || []).length > 1 ? ' — ' + money(c.amount) : '')).join('<br>')}</div>` : ''}
         <div class="sep"></div>
         <span class="em">Чистыми</span><span class="em ${net >= 0 ? 'pos' : 'neg'}">${money(net)}</span>
       </div>
@@ -571,7 +572,6 @@ async function renderOrder(id) {
     <div class="card"><h2>Фото</h2><div id="photos"></div></div>
     <details class="card fold more-act"><summary><h2>Ещё</h2></summary>
       ${more}
-      ${o.tgText ? `<details class="tg"><summary>Исходное сообщение из Telegram</summary><pre>${esc(o.tgText)}</pre></details>` : ''}
       <button class="btn danger" data-a="bad">${o.problemClient ? 'Снять отметку «проблемный клиент»' : '⚠ Отметить: проблемный клиент'}</button>
       <button class="btn danger" data-a="del">Удалить заявку</button>
     </details>`;
@@ -788,7 +788,7 @@ async function renderClose(id) {
   view.innerHTML = `
     <form id="f" autocomplete="off">
       <div class="card">
-        <div class="field"><label>Взял с клиента, ₽ — вся сумма</label>
+        <div class="field"><label>Оплата клиента, ₽ — вся сумма</label>
           <input class="input big" name="income" inputmode="decimal" placeholder="0" value="${o.income ? esc(o.income) : ''}">
           ${o.sd?.advance ? `<p class="small warn-text" style="margin:6px 0 0">Аванс был ${money(o.sd.advance)} — впишите общую сумму вместе с ним.</p>` : ''}
           <label class="check" style="margin-top:8px"><input type="checkbox" id="diag" ${o.diagOnly ? 'checked' : ''}> Была только диагностика</label></div>
@@ -829,7 +829,7 @@ async function renderClose(id) {
     const inc = parseMoney($('[name=income]').value);
     const cs = readCosts().reduce((s, c) => s + c.amount, 0);
     const net = inc - cs;
-    $('#total').innerHTML = `<span>Взял</span><span>${money(inc)}</span>
+    $('#total').innerHTML = `<span>Оплата клиента</span><span>${money(inc)}</span>
       <span>Расходы</span><span>− ${money(cs)}</span>
       <span class="sum">Чистыми</span><span class="sum ${net >= 0 ? 'pos' : 'neg'}">${money(net)}</span>`;
     // итог рядом с кнопкой — сумма и действие видны вместе
@@ -989,7 +989,7 @@ async function renderReport() {
       <h2>Прибыль за месяц</h2>
       <div class="big-num ${s.profit >= 0 ? 'pos' : 'neg'}">${money(s.profit)}</div>
       <div class="stat" style="margin-top:12px">
-        <span>Взял с клиентов</span><b>${money(s.income)}</b>
+        <span>Оплата клиентов</span><b>${money(s.income)}</b>
         <span>Расходы</span><span>− ${money(s.parts)}</span>
         <span>Чистыми с заявок</span><b>${money(s.net)}</b>
         ${Object.entries(s.byCat).map(([c, v]) => `<span class="muted">− ${esc(c)}</span><span class="muted">${money(v)}</span>`).join('')}
@@ -1759,7 +1759,9 @@ async function checkUpdateBanner(force) {
 const todayDateText = () => { const t = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }); return t[0].toUpperCase() + t.slice(1); };
 function tickClock() {
   const d = new Date();
-  $('#clock').textContent = hhmm(d);
+  // дата и время на всех экранах — двумя строчками, чтобы заголовок не обрезался
+  $('#clock').innerHTML = '<span class="c-d">' + d.toLocaleDateString('ru-RU', { weekday: 'short' }) + ' ' +
+    String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '</span><span class="c-t">' + hhmm(d) + '</span>';
   const td = $('#todayDate'); if (td) td.textContent = todayDateText();
 }
 

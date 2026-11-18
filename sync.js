@@ -185,7 +185,7 @@ const STATUS_RU = { open: 'В работе', sd: 'На СД', closed: 'Закр�
 
 function ordersCsv(orders) {
   const rows = [['№', 'Создана', 'Статус', 'Закрыта', 'Имя', 'Телефон', 'Адрес', 'Кв.', 'Техника', 'Модель', 'Проблема',
-    'Что сделано', 'Гарантия, дней', 'По гарантии', 'Взял', 'Расходы (что)', 'Расходы, сумма', 'Чистыми']];
+    'Что сделано', 'Гарантия, дней', 'По гарантии', 'Оплата клиента', 'Расходы (что)', 'Расходы, сумма', 'Чистыми']];
   orders.slice().sort((a, b) => a.num - b.num).forEach((o) => rows.push([
     o.num, _d(o.createdAt), STATUS_RU[o.status] || o.status, _d(o.closedAt), o.name, o.phone, o.address, o.apt,
     o.device, o.model, o.problem, o.workDone, o.warrantyDays || '', o.isWarranty ? 'да' : '',
