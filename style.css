@@ -66,6 +66,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .clock { flex: none; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; opacity: .95; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .clock .c-d { font-size: 12px; }
 .clock .c-t { font-size: 15px; font-weight: 600; }
+/* «Создать» в шапке формы заявки — всегда на виду, и при открытой клавиатуре */
+.top-save { flex: none; border: 0; border-radius: 12px; padding: 9px 14px; font: inherit; font-size: 15px; font-weight: 650;
+  background: #fff; color: #0f5c6e; cursor: pointer; }
+.top-save:active { filter: brightness(.9); }
+.top-save[hidden], .clock[hidden] { display: none; }
+@media (prefers-color-scheme: dark) { .top-save { background: #5cc3d6; color: #062228; } }
 .top-r { flex: none; display: flex; justify-content: flex-end; }
 .top-r .sync { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
 /* Предупреждение Диска — отдельной строкой под шапкой */

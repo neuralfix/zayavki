@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.31'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.32'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -90,6 +90,7 @@ function toast(msg, ms = 2600) {
 function setTitle(t, back) {
   $('#title').textContent = t;
   $('#backBtn').hidden = !back;
+  $('#topSave').hidden = true; $('#clock').hidden = false;   // кнопку «Создать» в шапке показывает только форма заявки
   document.title = t + ' — Мои заявки';
 }
 function setTab(name) {
@@ -367,6 +368,10 @@ async function renderOrderForm(id, warrantyFromId) {
       <div class="field"><label>Заметки</label><textarea class="input" name="notes">${esc(v.notes)}</textarea></div>
       <button class="btn" type="submit">${o ? 'Сохранить' : 'Создать заявку'}</button>
     </form>`;
+  // «Создать» / «Сохранить» — ещё и в шапке: она всегда видна, листать вниз во время разговора не нужно
+  const ts = $('#topSave');
+  ts.textContent = o ? 'Сохранить' : 'Создать'; ts.hidden = false; $('#clock').hidden = true;
+  ts.onclick = () => $('#f').requestSubmit();
   let device = v.device || '';
   $$('#dev .chip').forEach((c) => c.onclick = () => {
     device = device === c.dataset.v ? '' : c.dataset.v;
