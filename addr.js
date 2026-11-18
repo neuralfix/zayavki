@@ -27,9 +27,10 @@ function _setMeta(d) {
 }
 async function streetsInfo() { await loadStreets(); return _streetsMeta; }
 // Скачать справочник с сайта (минуя память приложения); новее — сохранить. Ответ: { updated, before, after }
+// no-cache: браузер спрашивает сайт «изменился ли файл?» — если нет, справочник заново не качается
 async function updateStreets() {
   const before = await streetsInfo();
-  const r = await fetch('streets.json?fresh=' + Date.now(), { cache: 'no-store' });
+  const r = await fetch('streets.json?fresh=1', { cache: 'no-cache' });
   if (!r.ok) throw new Error('Сайт не ответил (' + r.status + ')');
   const d = await r.clone().json();
   if (!Array.isArray(d.s) || d.s.length < 100) throw new Error('Справочник на сайте повреждён');

@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.25'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.26'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -186,8 +186,8 @@ const daysWord = (n) => plural(n, 'день', 'дня', 'дней');
 // Гарантия: до какого дня и идёт ли сейчас (только у закрытых с ремонтом)
 const warEndOf = (o) => (o.status === 'closed' && o.warrantyDays && o.closedAt ? o.closedAt + o.warrantyDays * 864e5 : 0);
 const onWarranty = (o) => warEndOf(o) >= Date.now();
-// Раздел «Гарантия»: гарантийные вызовы, которые сейчас в работе или на СД, и все закрытые, у которых гарантия ещё идёт
-const inWarrantyTab = (o) => (o.isWarranty && isActive(o.status)) || onWarranty(o);
+// Раздел «Гарантия»: только гарантийные заявки, которые сейчас в работе или на СД. После закрытия — в «Закрытые»
+const inWarrantyTab = (o) => o.isWarranty && isActive(o.status);
 // «12 дней» / «3 месяца»
 const warrantyText = (o) => o.warrantyMonths ? o.warrantyMonths + ' ' + plural(o.warrantyMonths, 'месяц', 'месяца', 'месяцев')
   : o.warrantyDays ? o.warrantyDays + ' ' + daysWord(o.warrantyDays) : '';
@@ -236,7 +236,7 @@ function drawList(all) {
       : (b.closedAt || b.createdAt) - (a.closedAt || a.createdAt)));
   const el = $('#list');
   if (!list.length) {
-    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'war' ? 'Сейчас ни одной заявки на гарантии.<br>Гарантия ставится при закрытии заявки.' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
+    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'war' ? 'Гарантийных заявок в работе нет.<br>Закрытые гарантийные — в разделе «Закрытые».' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
     return;
   }
   el.innerHTML = list.map((o) => {
@@ -244,10 +244,6 @@ function drawList(all) {
     if (o.status === 'open') when = o.visitAt ? '🕑 ' + fmtDate(o.visitAt) : 'создана ' + fmtDate(o.createdAt);
     else if (o.status === 'sd') when = '🔧 ' + sdLine(o) + (sdLate(o) ? ' · ⚠ ждёт ' + sdDays(o) + ' ' + daysWord(sdDays(o)) : '');
     else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
-    if (f === 'war' && onWarranty(o)) {   // в разделе «Гарантия» — до какого дня и сколько осталось
-      const left = Math.round((new Date(warEndOf(o)).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 864e5);   // по календарю
-      when = '🛡 гарантия до ' + dayShort(warEndOf(o)) + (left > 0 ? ', ещё ' + left + ' ' + daysWord(left) : ', последний день');
-    }
     const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
     return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
       <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${o.isWarranty ? ' <span class="tag-w">гарантия</span>' : ''}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
@@ -1255,6 +1251,7 @@ async function renderSettings() {
   const ocrKey = (await getMeta('ocrKey')) || '';
   const autoPlate = (await getMeta('autoPlate')) !== false;
   const st = await streetsInfo().catch(() => null);
+  const stChecked = await getMeta('streetsCheckedAt');
   const fmtDay = (d) => (d ? d.split('-').reverse().join('.') : 'старая, без даты');
 
   view.innerHTML = `
@@ -1303,10 +1300,12 @@ async function renderSettings() {
         <span>База от</span><b>${esc(fmtDay(st.date))}</b>
         <span>Улиц и сёл</span><span>${st.streets.toLocaleString('ru-RU')}</span>
         <span>Домов</span><span>${st.houses.toLocaleString('ru-RU')}</span>
+        <span>Проверено</span><span>${stChecked ? esc(dayShort(stChecked)) + ' ' + hhmm(new Date(stChecked)) : 'ещё нет'}</span>
       </div>
       <p class="note">Источник: ${esc(st.src)}. Уфа и Уфимский район. Справочник лежит в телефоне и работает без интернета.</p>` : ''}
       <button class="btn sec" id="updStreets">Проверить обновление справочника</button>
-      <p class="note">На сайт ничего не уходит: телефон только скачивает свежий справочник, если он новее.</p>
+      <p class="note">Справочник обновляется сам: раз в сутки, когда есть интернет, телефон проверяет сайт и скачивает новую базу,
+        если она вышла. Кнопка — проверить прямо сейчас. На сайт ничего не уходит.</p>
     </details>
     <div class="card"><h2>Приложение</h2>
       <div class="stat">
@@ -1358,7 +1357,8 @@ async function renderSettings() {
     const b = e.target; b.disabled = true; b.textContent = 'Проверяю…';
     try {
       const r = await updateStreets();
-      const day = (d) => (d ? d.split('-').reverse().join('.') : 'без даты');
+      await setMeta('streetsCheckedAt', Date.now());
+      const day =(d) => (d ? d.split('-').reverse().join('.') : 'без даты');
       toast(r.updated ? `Справочник обновлён: база от ${day(r.after.date)}, улиц ${r.after.streets.toLocaleString('ru-RU')} (было ${r.before.streets.toLocaleString('ru-RU')})`
         : `У вас самый свежий справочник: база от ${day(r.after.date)}`, 6000);
       renderSettings();
@@ -1718,6 +1718,23 @@ async function checkUpdateBanner(force) {
   $('button', bar).onclick = updateApp;
 }
 
+// Справочник улиц обновляется сам: не чаще раза в сутки, когда есть интернет.
+// Если файл на сайте не менялся, заново он не скачивается (браузер только сверяет его с сайтом).
+let _streetsChecking = false;
+async function autoUpdateStreets() {
+  if (!navigator.onLine || _streetsChecking) return;
+  _streetsChecking = true;
+  try {
+    if (Date.now() - ((await getMeta('streetsCheckedAt')) || 0) < 864e5) return;
+    const r = await updateStreets();
+    await setMeta('streetsCheckedAt', Date.now());
+    if (r.updated) {
+      toast(`Справочник улиц обновился: база от ${r.after.date.split('-').reverse().join('.')}`, 5000);
+      if (location.hash.startsWith('#/settings') && !document.activeElement?.matches('input, textarea')) renderSettings();
+    }
+  } catch (e) { console.warn('streets', e); } finally { _streetsChecking = false; }
+}
+
 // Дата и время в шапке: «вт 17.11 · 14:35»
 const todayDateText = () => { const t = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }); return t[0].toUpperCase() + t.slice(1); };
 function tickClock() {
@@ -1753,6 +1770,7 @@ async function start() {
   // Список проверенных фото от массового считывания (убрано в 1.25) больше не нужен
   getMeta('plateScan').then((ps) => { if (ps) setMeta('plateScan', null); });
   checkUpdateBanner(true);
+  setTimeout(autoUpdateStreets, 30 * 1000); // не мешать запуску
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);
   // Запуск с ярлыка (старый ярлык открывал «Заявки») — начинаем с «Сегодня»
@@ -1782,8 +1800,8 @@ async function start() {
   };
   window.addEventListener('online', () => { updateSyncBadge(); requestSync(); });
   window.addEventListener('offline', updateSyncBadge);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) { requestSync(); checkUpdateBanner(); } });
-  window.addEventListener('online', () => checkUpdateBanner());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) { requestSync(); checkUpdateBanner(); autoUpdateStreets(); } });
+  window.addEventListener('online', () => { checkUpdateBanner(); autoUpdateStreets(); });
   setInterval(() => { if (navigator.onLine) syncNow().then(updateSyncBadge); }, 5 * 60 * 1000);
   if (navigator.onLine) requestSync();
 }
