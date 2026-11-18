@@ -371,6 +371,8 @@ details.fold[open] > summary { margin-bottom: 10px; }
 .ord-icons { display: flex; gap: 6px; flex: none; }
 .ord-icons .ico { width: 40px; height: 40px; }
 .ord-head { align-items: center; }
+.copy-tap { cursor: pointer; }
+.copy-tap:active { opacity: .6; }
 .copy-ico { border: 0; background: none; font-size: 17px; padding: 0 4px; vertical-align: -1px; cursor: pointer; }
 .ord-meta { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
 .more-act details.tg { margin-top: 10px; }

@@ -49,7 +49,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.28'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.29'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -629,6 +629,8 @@ async function renderOrder(id) {
   const icons = !big && (tel || o.address) ? `<div class="ord-icons">
       ${tel ? `<a class="ico" href="${esc(telHref(o.phone))}" aria-label="Позвонить">${ICON_CALL}</a>` : ''}
       ${o.address ? `<a class="ico" href="${esc(routeHref(o))}" aria-label="Маршрут">${ICON_ROUTE}</a>` : ''}</div>` : '';
+  // Копировать подпись для контакта («ХОЛ Мубарякова 22/1-3 Иван 18.11.26»): значок 📋 у адреса (нет адреса — у телефона) и касание по адресу
+  const copyBtn = ' <button type="button" class="copy-ico" data-a="copyc" aria-label="Копировать для контакта" title="Копировать для контакта">📋</button>';
   const doneWord = { closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' }[o.status];
   const meta = ['Создана ' + fmtDate(o.createdAt), doneWord && o.closedAt ? doneWord + ' ' + fmtDate(o.closedAt) : ''].filter(Boolean).join(' · ');
   view.innerHTML = `
@@ -642,9 +644,9 @@ async function renderOrder(id) {
           ${o.model ? `<div class="ord-model">${esc(o.model)}${o.modelAuto ? ' <span class="muted small" title="Модель вписана автоматически по фото шильдика">· авто</span>' : ''}</div>` : ''}</div>
         <span class="badge ${o.status}">${STATUS[o.status]}</span>${icons}</div>
       <dl class="kv">
-        ${o.name ? `<dt>Имя</dt><dd>${esc(o.name)}</dd>` : ''}
-        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)} <button type="button" class="copy-ico" data-a="copyc" aria-label="Копировать для контакта" title="Копировать для контакта">📋</button></dd>` : ''}
-        ${o.address ? `<dt>Адрес</dt><dd>${esc(fullAddress(o))}</dd>` : ''}
+        ${o.name ? `<dt>Имя</dt><dd>${esc(o.name)}${!o.address && !o.phone ? copyBtn : ''}</dd>` : ''}
+        ${o.phone ? `<dt>Телефон</dt><dd>${esc(o.phone)}${!o.address ? copyBtn : ''}</dd>` : ''}
+        ${o.address ? `<dt>Адрес</dt><dd><span class="copy-tap" data-a="copyc">${esc(fullAddress(o))}</span>${copyBtn}</dd>` : ''}
         ${o.problem ? `<dt>Проблема</dt><dd>${esc(o.problem)}</dd>` : ''}
         ${o.visitAt && isActive(o.status) ? `<dt>Когда</dt><dd>${esc(fmtDate(o.visitAt))}</dd>` : ''}
         ${parent ? `<dt>Гарантия к</dt><dd><a href="#/order/${parent.id}">№${parent.num}</a> от ${esc(fmtDate(parent.closedAt || parent.createdAt, false))}</dd>` : ''}
@@ -666,11 +668,11 @@ async function renderOrder(id) {
   const save = async (patch) => { Object.assign(o, patch, { updatedAt: Date.now() }); await dbPut('orders', o); changed(); renderOrder(id); };
   $('[data-a=edit]').onclick = () => go('#/edit/' + o.id);
   const e2 = $('[data-a=edit2]'); if (e2) e2.onclick = () => go('#/edit/' + o.id);
-  const cc = $('[data-a=copyc]'); if (cc) cc.onclick = async () => {
+  $$('[data-a=copyc]').forEach((cc) => cc.onclick = async () => {
     const t = contactLabel(o);
     if (await copyText(t)) toast('Скопировано: ' + t + ' · Сохраняйте контакт в «Телефон», не в Google', 5000);
     else toast('Не получилось скопировать: ' + t, 5000);
-  };
+  });
   const sdB = $('[data-a=sd]'); if (sdB) sdB.onclick = async () => {
     const r = await sdDialog(o); if (!r) return;
     await save({ status: 'sd', sd: { at: o.sd?.at || Date.now(), what: r.what, advance: parseMoney(r.advance) } });
