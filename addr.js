@@ -133,10 +133,11 @@ async function addressSuggestions(value, history) {
   const toks = _tokens(v);
   if (!toks.length) return out;
 
-  // Свои прошлые адреса — первыми, по квартирам
-  out.push(..._flatSuggestions(history, (k) => _matches(k, toks), v.includes(',') ? 6 : 4));
+  // После запятой улицы не ищем — пишут дом/квартиру: тут нужны свои прошлые адреса
+  if (v.includes(',')) return _flatSuggestions(history, (k) => _matches(k, toks), 6);
 
-  if (v.includes(',')) return out; // после запятой улицы не ищем — пишут дом/квартиру
+  // Пока пишут улицу — сначала улицы из справочника: выбрал, и она дописалась.
+  // Квартиры, где уже были, — ниже улиц (а после выбора улицы и дома — первыми, см. выше).
   const first = toks[0];
   const hits = [];
   for (const s of _streets) {
@@ -147,9 +148,11 @@ async function addressSuggestions(value, history) {
     if (hits.length > 400) break;
   }
   hits.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2].label.localeCompare(b[2].label, 'ru'));
-  for (const [, , s] of hits.slice(0, 8 - out.length)) {
+  for (const [, , s] of hits.slice(0, 8)) {
     out.push({ text: s.label, sub: s.loc === 'Уфа' ? '' : 'Уфимский р-н', value: s.label + ', ', kind: 'street' });
   }
+  // Места под список остались — добавить квартиры, где уже были (например, адрес не из справочника)
+  if (out.length < 8) out.push(..._flatSuggestions(history, (k) => _matches(k, toks), Math.min(4, 8 - out.length)));
   return out;
 }
 
