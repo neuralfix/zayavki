@@ -4,7 +4,7 @@
 importScripts('db.js', 'crypto.js', 'sync.js');
 
 // При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в app.js.
-const CACHE = 'zayavki-v37';
+const CACHE = 'zayavki-v38';
 const OCR_CACHE = 'zayavki-ocr-v1'; // распознавание шильдика: большие файлы, не перекачиваются при обновлении
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'addr.js', 'ocr.js', 'parse.js', 'streets.json', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];

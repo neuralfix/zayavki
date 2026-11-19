@@ -51,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.36'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.37'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -815,81 +815,90 @@ function autoPlateAfterAdd(orderId, ids) {
   }).catch((e) => toast('Шильдик не прочитан: ' + e.message, 5000));
 }
 
-// Просмотр фото заявки: листать пальцем влево-вправо (или стрелками), счётчик «3 / 7»
+// Просмотр фото заявки: листается пальцем, как галерея телефона — лента с плавной доводкой до соседнего фото;
+// стрелки и ‹ › тоже листают; счётчик «3 / 7». Жест «Назад» закрывает просмотр, а не уходит из заявки.
 async function openViewer(photoId, o, box) {
   const list = (await dbByIndex('photos', 'orderId', o.id)).filter((x) => x.blob).sort((a, b) => a.createdAt - b.createdAt);
   if (!list.length) return;
   let i = Math.max(0, list.findIndex((x) => x.id === photoId));
-  let u = null;
+  const urls = [];
+  const url = (b) => { const u = URL.createObjectURL(b); urls.push(u); return u; };
   const v = $('#viewer');
-  v.innerHTML = `<div class="stage"><img alt=""><span class="cnt"></span>
+  v.innerHTML = `<div class="stage"><div class="track">${list.map((p) => `<div class="slide"><img alt="" draggable="false" src="${url(p.blob)}"></div>`).join('')}</div>
+      <span class="cnt"></span>
       <button class="nav prev" data-a="prev" aria-label="Предыдущее фото">‹</button><button class="nav next" data-a="next" aria-label="Следующее фото">›</button></div>
     <div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
     <button data-a="rotl" class="rot" aria-label="Повернуть против часовой">↺</button><button data-a="rot" class="rot" aria-label="Повернуть по часовой">↻</button>
     <button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>`;
   v.hidden = false;
-  const img = $('img', v);
-  const show = () => {
-    if (u) URL.revokeObjectURL(u);
-    u = URL.createObjectURL(list[i].blob); img.src = u;
+  const track = $('.track', v);
+  const imgAt = (k) => track.children[k] && $('img', track.children[k]);
+  const count = () => {
     $('.cnt', v).textContent = list.length > 1 ? (i + 1) + ' / ' + list.length : '';
-    $$('.nav', v).forEach((b) => { b.hidden = list.length < 2; });
+    $('[data-a=prev]', v).hidden = i === 0; $('[data-a=next]', v).hidden = i >= list.length - 1;
   };
-  // Поворот: каждое нажатие — на четверть по часовой. Поворачиваем всегда исходный снимок на общий угол
-  // (без потери качества от нескольких пересжатий), записываем при переходе к другому фото или закрытии.
-  let rot = 0, rotBlob = null, rotJob = Promise.resolve();
-  const flushRot = async () => {
-    await rotJob;
-    if (!rot || !rotBlob) { rot = 0; rotBlob = null; return; }
-    const p = list[i]; const blob = rotBlob; rot = 0; rotBlob = null;
+  const goTo = (k, smooth) => track.scrollTo({ left: k * track.clientWidth, behavior: smooth ? 'smooth' : 'auto' });
+  goTo(i, false); count();
+
+  // Поворот: каждое нажатие — на четверть. Поворачиваем всегда исходный снимок на общий угол
+  // (без потери качества от нескольких пересжатий), записываем, когда ушли к другому фото или закрыли.
+  let rot = 0, rotBlob = null, rotIdx = -1, rotJob = Promise.resolve();
+  const saveRot = async () => {
+    const p = list[rotIdx]; const blob = rotBlob; const had = rot && blob && p;
+    rot = 0; rotBlob = null; rotIdx = -1;
+    if (!had) return;
     p.blob = blob;
     const fresh = await dbGet('photos', p.id);
     if (fresh) { fresh.blob = blob; fresh.uploaded = 0; await dbPut('photos', fresh); }   // на Диск уйдёт повёрнутое
     changed(); photoWidget(o, box);
   };
-  const step = async (d) => { if (list.length > 1) { await flushRot(); i = (i + d + list.length) % list.length; show(); } };
-  show();
+  const flushRot = async () => { await rotJob; await saveRot(); };
   const turn = (by) => { rotJob = rotJob.then(async () => {
+    if (rotIdx !== -1 && rotIdx !== i) await saveRot();
+    rotIdx = i;
     rot = (rot + by + 360) % 360;
     rotBlob = rot ? await rotateImage(list[i].blob, rot) : null;
-    if (u) URL.revokeObjectURL(u);
-    u = URL.createObjectURL(rotBlob || list[i].blob); img.src = u;
+    imgAt(i).src = url(rotBlob || list[i].blob);
   }).catch((e) => toast('Не получилось повернуть: ' + e.message, 4000)); };
   $('[data-a=rot]', v).onclick = () => turn(90);
   $('[data-a=rotl]', v).onclick = () => turn(-90);
-  // Свайп: палец ведёт фото за собой, отпустили дальше 60 px — следующее
-  let sx = null, sy = 0, dx = 0;
-  const stage = $('.stage', v);
-  stage.addEventListener('touchstart', (e) => {
-    if (e.touches.length !== 1) { sx = null; return; }
-    sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; img.style.transition = 'none';
+
+  // Листание — прокрутка ленты: фото едет за пальцем и мягко доводится до соседнего
+  track.addEventListener('scroll', () => {
+    const k = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+    if (k !== i && k >= 0 && k < list.length) { i = k; count(); flushRot(); }
   }, { passive: true });
-  stage.addEventListener('touchmove', (e) => {
-    if (sx === null || e.touches.length !== 1) return;
-    dx = e.touches[0].clientX - sx;
-    if (Math.abs(dx) > Math.abs(e.touches[0].clientY - sy)) img.style.transform = 'translateX(' + dx + 'px)';
-  }, { passive: true });
-  stage.addEventListener('touchend', () => {
-    if (sx === null) return;
-    img.style.transition = ''; img.style.transform = '';
-    if (Math.abs(dx) > 60) step(dx < 0 ? 1 : -1);
-    sx = null;
-  });
+  const step = (d) => { const k = Math.min(list.length - 1, Math.max(0, i + d)); if (k !== i) goTo(k, true); };
   const onKey = (e) => { if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'Escape') close(); };
   document.addEventListener('keydown', onKey);
   $('[data-a=prev]', v).onclick = () => step(-1);
   $('[data-a=next]', v).onclick = () => step(1);
-  const close = async () => { await flushRot(); v.hidden = true; v.innerHTML = ''; if (u) URL.revokeObjectURL(u); document.removeEventListener('keydown', onKey); };
+  const onResize = () => goTo(i, false);   // повернули телефон — остаёмся на том же фото
+  window.addEventListener('resize', onResize);
+
+  // Жест «Назад» (и кнопка «Закрыть») закрывает просмотр: открываем его отдельным шагом истории
+  history.pushState({ viewer: 1 }, '');
+  let closed = false;
+  const finish = async () => {
+    if (closed) return; closed = true;
+    window.removeEventListener('popstate', finish); window.removeEventListener('resize', onResize);
+    document.removeEventListener('keydown', onKey);
+    await flushRot();
+    v.hidden = true; v.innerHTML = ''; urls.forEach((u) => URL.revokeObjectURL(u));
+  };
+  window.addEventListener('popstate', finish);
+  const close = () => { if (history.state && history.state.viewer) history.back(); else finish(); };
   $('[data-a=x]', v).onclick = close;
   $('[data-a=del]', v).onclick = async () => {
     if (!confirm('Удалить это фото?')) return;
-    await rotJob; rot = 0; rotBlob = null;   // удаляем — поворот не нужен
+    await rotJob;
+    if (rotIdx === i) { rot = 0; rotBlob = null; rotIdx = -1; } else await saveRot();   // удаляем — его поворот не нужен
     const p = list[i];
     if (p.remotePath) await addPendingDelete(p.remotePath);
     await dbDel('photos', p.id);
-    list.splice(i, 1); changed(); photoWidget(o, box);
+    list.splice(i, 1); track.children[i].remove(); changed(); photoWidget(o, box);
     if (!list.length) { close(); return; }
-    i = Math.min(i, list.length - 1); show();
+    i = Math.min(i, list.length - 1); goTo(i, false); count();
   };
   // Модель с шильдика — распознаётся в телефоне, вы выбираете и проверяете
   $('[data-a=ocr]', v).onclick = async (e) => {
@@ -897,7 +906,7 @@ async function openViewer(photoId, o, box) {
     const reset = () => { btn.textContent = 'Считать модель'; btn.disabled = false; };
     try {
       await rotJob;
-      const r = await readPlate(rotBlob || list[i].blob, (t) => { btn.textContent = t; });
+      const r = await readPlate((rotIdx === i && rotBlob) || list[i].blob, (t) => { btn.textContent = t; });
       reset();
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
       const res = await plateDialog(r, fresh.model || '', fresh.device);
