@@ -51,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.35'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.36'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -131,7 +131,7 @@ async function updateSyncBadge() {
   b.textContent = icon;
   b.title = alert || (pending ? 'Ждут отправки: ' + s.pendingPhotos + ' фото' + (s.dataPending ? ' + данные' : '') : s.lastSync ? 'На Диске, последняя отправка ' + fmtDate(s.lastSync) : 'На Диске');
   b.setAttribute('aria-label', 'Диск: ' + b.title);
-  // строка-предупреждение не нужна на самой странице «Диск» — там всё подробно
+  // строка-предупреждение не нужна на самой странице «Настройки» — там всё подробно
   bar.hidden = !alert || location.hash.startsWith('#/settings');
   bar.className = cls === 'err' ? 'err' : '';
   bar.innerHTML = alert ? `<a href="#/settings">⚠ ${esc(alert)} <b>›</b></a>` : '';
@@ -227,6 +227,7 @@ async function renderOrders() {
     </div>
     <input class="search" type="search" placeholder="Поиск: имя, телефон, адрес, №" value="${esc(state.search)}">
     <div class="list" id="list"></div>
+    <div class="fab-space"></div>
     <a class="fab" href="#/new" aria-label="Новая заявка">+</a>`;
   $$('.seg button', view).forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderOrders(); });
   $('.search', view).oninput = (e) => { state.search = e.target.value; drawList(all); };
@@ -309,13 +310,15 @@ async function renderToday() {
   const sec = (title, list, t, cls = '') => list.length ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>
     <div class="list">${list.map((o) => todayItem(o, t(o))).join('')}</div>` : '';
   view.innerHTML = `
-    <div class="today-head"><h2 id="todayDate">${esc(todayDateText())}</h2><a class="btn mini" href="#/new">+ Новая заявка</a></div>
+    <div class="today-head"><h2 id="todayDate">${esc(todayDateText())}</h2></div>
+    <a class="fab" href="#/new" aria-label="Новая заявка">+</a>
     ${sd ? `<a class="item sd-link${sdOld ? ' late' : ''}" href="#/orders" id="toSd">🔧 На СД: ${sd}${sdOld ? ` <span class="neg">· ⚠ ${sdOld} ${sdOld === 1 ? 'ждёт' : 'ждут'} больше недели</span>` : ''}</a>` : ''}
     ${sec('Просрочено', late, (o) => dayShort(o.visitAt) + ', ' + hhmm(o.visitAt), 'neg')}
     ${sec('На сегодня', today, (o) => hhmm(o.visitAt))}
     ${sec('Без времени', noTime, () => '')}
-    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.</div>' : ''}
-    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}`;
+    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.<br>Новая заявка — кнопка «+» внизу.</div>' : ''}
+    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}
+    <div class="fab-space"></div>`;
   const toSd = $('#toSd'); if (toSd) toSd.onclick = () => { state.filter = 'sd'; };
 }
 
@@ -635,13 +638,14 @@ async function renderOrder(id) {
   const sdCard = o.sd && o.status === 'sd'
     ? `<div class="card sd-card"><b>🔧 На СД</b> с ${esc(dayShort(o.sd.at))}
        ${o.sd.what ? '· ' + esc(o.sd.what) : ''}${o.sd.advance ? ' · аванс ' + money(o.sd.advance) : ''}</div>` : '';
-  // Главное действие по статусу — сразу под карточкой; редкие — в «Ещё»
-  let main = '', more = '';
+  // Главное (позвонить, маршрут, закрыть) — панелью внизу, под большим пальцем; «Забрал на СД» — под карточкой; редкие — в «Ещё»
+  let main = '', more = '', closeText = '';
   if (o.status === 'open') {
-    main = `<div class="btns main-act"><a class="btn" href="#/close/${o.id}">Закрыть заявку</a><button class="btn sec" data-a="sd">Забрал на СД</button></div>`;
+    closeText = 'Закрыть заявку';
+    main = `<div class="main-act"><button class="btn sec" data-a="sd">🔧 Забрал на СД</button></div>`;
     more = `<button class="btn danger" data-a="refuse">Отказ — приехал, денег не взял</button><button class="btn danger" data-a="cancel">Отмена — клиент отменил</button>`;
   } else if (o.status === 'sd') {
-    main = `<div class="main-act"><a class="btn" href="#/close/${o.id}">Отремонтировал — закрыть</a></div>`;
+    closeText = 'Отремонтировал — закрыть';
     more = `<button class="btn sec" data-a="sd">Изменить: что забрал, аванс</button><button class="btn danger" data-a="refuse">Отказ — вернул без ремонта</button>`;
   } else if (o.status === 'closed') {
     more = `${warActive ? '' : `<a class="btn sec" href="#/new/${o.id}">Заявка по гарантии</a>`}<button class="btn danger" data-a="reopen">Вернуть в работу</button>`;
@@ -656,11 +660,11 @@ async function renderOrder(id) {
   const copyBtn = ' <button type="button" class="copy-ico" data-a="copyc" aria-label="Копировать для контакта" title="Копировать для контакта">📋</button>';
   const doneWord = { closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' }[o.status];
   const meta = ['Создана ' + fmtDate(o.createdAt), doneWord && o.closedAt ? doneWord + ' ' + fmtDate(o.closedAt) : ''].filter(Boolean).join(' · ');
+  const actBar = big ? `<div class="act-bar">
+      ${tel ? `<a class="ico" href="${esc(telHref(o.phone))}" aria-label="Позвонить">${ICON_CALL}</a>` : ''}
+      ${o.address ? `<a class="ico" href="${esc(routeHref(o))}" aria-label="Маршрут">${ICON_ROUTE}</a>` : ''}
+      <a class="btn" href="#/close/${o.id}">${closeText}</a></div>` : '';
   view.innerHTML = `
-    ${big && (tel || o.address) ? `<div class="btns" style="margin-bottom:12px">
-      ${tel ? `<a class="btn" href="${esc(telHref(o.phone))}">Позвонить</a>` : '<span></span>'}
-      ${o.address ? `<a class="btn sec" href="${esc(routeHref(o))}">Маршрут</a>` : '<span></span>'}
-    </div>` : ''}
     ${o.problemClient ? `<div class="client-hint bad" style="margin-bottom:12px"><b>⚠ Проблемный клиент</b>${o.problemClient !== 'да' ? ': ' + esc(o.problemClient) : ''}</div>` : ''}
     <div class="card">
       <div class="ord-head"><div class="ord-title">${o.device ? `<b>${esc(o.device)}</b>${o.deviceAuto ? ' <span class="muted small" title="Вид техники вписан автоматически по фото шильдика">· авто</span>' : ''}` : '<span class="muted">Техника не указана</span> · <button type="button" class="link" data-a="edit2">указать</button>'}${o.isWarranty ? ' <span class="tag-w">по гарантии</span>' : o.isRepeat ? ' <span class="tag-r">повторный клиент</span>' : ''}
@@ -675,7 +679,6 @@ async function renderOrder(id) {
         ${parent ? `<dt>Гарантия к</dt><dd><a href="#/order/${parent.id}">№${parent.num}</a> от ${esc(fmtDate(parent.closedAt || parent.createdAt, false))}</dd>` : ''}
         ${o.notes ? `<dt>Заметки</dt><dd>${esc(o.notes)}</dd>` : ''}
       </dl>
-      <button class="link" data-a="edit">Изменить данные</button>
       <p class="ord-meta">${esc(meta)}</p>
     </div>
     ${main}
@@ -686,10 +689,13 @@ async function renderOrder(id) {
       ${more}
       <button class="btn danger" data-a="bad">${o.problemClient ? 'Снять отметку «проблемный клиент»' : '⚠ Отметить: проблемный клиент'}</button>
       <button class="btn danger" data-a="del">Удалить заявку</button>
-    </details>`;
+    </details>
+    ${actBar}`;
+  // «Изменить» — в шапке справа, как в контактах и мессенджерах
+  const te = $('#topSave'); te.textContent = '✎ Изменить'; te.hidden = false; te.disabled = false; $('.top-r').hidden = true;
+  te.onclick = () => go('#/edit/' + o.id);
   await photoWidget(o, $('#photos'));
   const save = async (patch) => { Object.assign(o, patch, { updatedAt: Date.now() }); await dbPut('orders', o); changed(); renderOrder(id); };
-  $('[data-a=edit]').onclick = () => go('#/edit/' + o.id);
   const e2 = $('[data-a=edit2]'); if (e2) e2.onclick = () => go('#/edit/' + o.id);
   $$('[data-a=copyc]').forEach((cc) => cc.onclick = async () => {
     const t = contactLabel(o);
@@ -743,6 +749,21 @@ async function compressImage(file, max, q) {
   } catch (e) { return file; }
 }
 
+// Повернуть снимок на 90/180/270° по часовой
+async function rotateImage(blob, deg) {
+  const bmp = await createImageBitmap(blob);
+  const side = deg % 180 !== 0;
+  const c = document.createElement('canvas');
+  c.width = side ? bmp.height : bmp.width; c.height = side ? bmp.width : bmp.height;
+  const g = c.getContext('2d');
+  g.translate(c.width / 2, c.height / 2); g.rotate(deg * Math.PI / 180);
+  g.drawImage(bmp, -bmp.width / 2, -bmp.height / 2);
+  bmp.close && bmp.close();
+  const out = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+  if (!out) throw new Error('телефон не смог сохранить картинку');
+  return out;
+}
+
 async function photoWidget(o, box) {
   const photos = (await dbByIndex('photos', 'orderId', o.id)).sort((a, b) => a.createdAt - b.createdAt);
   const tiles = photos.map((p) => {
@@ -754,9 +775,9 @@ async function photoWidget(o, box) {
   box.innerHTML = `
     ${photos.length ? `<div class="photos">${tiles}</div>` : '<div class="note">Фото пока нет</div>'}
     <div class="add-ph">
-      <label>📷 Снять<input type="file" accept="image/*" capture="environment"></label>
-      <label>🖼 Галерея<input type="file" accept="image/*" multiple></label>
-      <label title="Если галерея не грузит">📁 Папки<input type="file" multiple></label></div>
+      <label>📷 Камера<input type="file" accept="image/*" capture="environment"></label>
+      <label>🖼 Галерея<input type="file" accept="image/*" multiple></label></div>
+    <label class="link small add-file">Галерея не открывает фото? Выбрать файлом<input type="file" multiple hidden></label>
     ${photos.some((p) => !p.uploaded && p.blob) ? '<div class="note" style="margin-top:6px">↑ — ещё не отправлено на Диск</div>' : ''}`;
   $$('input[type=file]', box).forEach((inp) => inp.onchange = async () => {
     // из «Папок» можно выбрать что угодно — берём только картинки
@@ -804,6 +825,7 @@ async function openViewer(photoId, o, box) {
   v.innerHTML = `<div class="stage"><img alt=""><span class="cnt"></span>
       <button class="nav prev" data-a="prev" aria-label="Предыдущее фото">‹</button><button class="nav next" data-a="next" aria-label="Следующее фото">›</button></div>
     <div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
+    <button data-a="rotl" class="rot" aria-label="Повернуть против часовой">↺</button><button data-a="rot" class="rot" aria-label="Повернуть по часовой">↻</button>
     <button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>`;
   v.hidden = false;
   const img = $('img', v);
@@ -813,8 +835,28 @@ async function openViewer(photoId, o, box) {
     $('.cnt', v).textContent = list.length > 1 ? (i + 1) + ' / ' + list.length : '';
     $$('.nav', v).forEach((b) => { b.hidden = list.length < 2; });
   };
-  const step = (d) => { if (list.length > 1) { i = (i + d + list.length) % list.length; show(); } };
+  // Поворот: каждое нажатие — на четверть по часовой. Поворачиваем всегда исходный снимок на общий угол
+  // (без потери качества от нескольких пересжатий), записываем при переходе к другому фото или закрытии.
+  let rot = 0, rotBlob = null, rotJob = Promise.resolve();
+  const flushRot = async () => {
+    await rotJob;
+    if (!rot || !rotBlob) { rot = 0; rotBlob = null; return; }
+    const p = list[i]; const blob = rotBlob; rot = 0; rotBlob = null;
+    p.blob = blob;
+    const fresh = await dbGet('photos', p.id);
+    if (fresh) { fresh.blob = blob; fresh.uploaded = 0; await dbPut('photos', fresh); }   // на Диск уйдёт повёрнутое
+    changed(); photoWidget(o, box);
+  };
+  const step = async (d) => { if (list.length > 1) { await flushRot(); i = (i + d + list.length) % list.length; show(); } };
   show();
+  const turn = (by) => { rotJob = rotJob.then(async () => {
+    rot = (rot + by + 360) % 360;
+    rotBlob = rot ? await rotateImage(list[i].blob, rot) : null;
+    if (u) URL.revokeObjectURL(u);
+    u = URL.createObjectURL(rotBlob || list[i].blob); img.src = u;
+  }).catch((e) => toast('Не получилось повернуть: ' + e.message, 4000)); };
+  $('[data-a=rot]', v).onclick = () => turn(90);
+  $('[data-a=rotl]', v).onclick = () => turn(-90);
   // Свайп: палец ведёт фото за собой, отпустили дальше 60 px — следующее
   let sx = null, sy = 0, dx = 0;
   const stage = $('.stage', v);
@@ -837,10 +879,11 @@ async function openViewer(photoId, o, box) {
   document.addEventListener('keydown', onKey);
   $('[data-a=prev]', v).onclick = () => step(-1);
   $('[data-a=next]', v).onclick = () => step(1);
-  const close = () => { v.hidden = true; v.innerHTML = ''; if (u) URL.revokeObjectURL(u); document.removeEventListener('keydown', onKey); };
+  const close = async () => { await flushRot(); v.hidden = true; v.innerHTML = ''; if (u) URL.revokeObjectURL(u); document.removeEventListener('keydown', onKey); };
   $('[data-a=x]', v).onclick = close;
   $('[data-a=del]', v).onclick = async () => {
     if (!confirm('Удалить это фото?')) return;
+    await rotJob; rot = 0; rotBlob = null;   // удаляем — поворот не нужен
     const p = list[i];
     if (p.remotePath) await addPendingDelete(p.remotePath);
     await dbDel('photos', p.id);
@@ -853,7 +896,8 @@ async function openViewer(photoId, o, box) {
     const btn = e.currentTarget; btn.disabled = true;
     const reset = () => { btn.textContent = 'Считать модель'; btn.disabled = false; };
     try {
-      const r = await readPlate(list[i].blob, (t) => { btn.textContent = t; });
+      await rotJob;
+      const r = await readPlate(rotBlob || list[i].blob, (t) => { btn.textContent = t; });
       reset();
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
       const res = await plateDialog(r, fresh.model || '', fresh.device);
@@ -1265,7 +1309,7 @@ const foldOpen = new Set();
 const foldAttr = (id) => (foldOpen.has(id) ? 'open' : '');
 
 async function renderSettings() {
-  setTitle('Диск и копии');
+  setTitle('Настройки');
   const s = await syncStatus();
   const clientId = (await getMeta('ydClientId')) || '';
   let est = '';
@@ -1297,7 +1341,7 @@ async function renderSettings() {
     ${!s.hasKey ? '<p class="small neg">Задайте пароль выше — без него на Диск ничего не отправляется.</p>' : ''}
     ${s.waiting && !s.error && !sendingAll ? `<p class="small muted">${WAIT_WHY[s.waitWhy] || WAIT_WHY.net}</p>` : ''}
     <button class="btn" id="syncNow" style="margin-top:12px" ${sendingAll ? 'disabled' : ''}>${sendingAll ? 'Отправляю…' : s.pendingPhotos > 20 ? 'Отправить всё' : 'Отправить сейчас'}</button>
-    ${s.pendingPhotos > 20 ? '<p class="note" style="margin-top:0">Пока идёт отправка, экран не гаснет. Держите приложение открытым, лучше на зарядке и Wi-Fi. Свернёте — отправка встанет на паузу и продолжится, когда откроете.</p>' : ''}
+    ${s.pendingPhotos > 20 ? '<p class="note" style="margin-top:0">Держите приложение открытым, лучше на зарядке и Wi-Fi. Погаснет экран или свернёте — отправка встанет на паузу и продолжится, когда откроете.</p>' : ''}
     <button class="btn sec" id="fromDisk">Восстановить с Диска</button>
     <button class="btn danger" id="disconnect">Отключить Диск</button>
     <p class="note">На Диске в папке «Приложения» лежат только зашифрованные файлы <b>data.bin</b> и папка <b>Фото</b>.
@@ -1677,7 +1721,7 @@ async function checkDiskCopy() {
   let d;
   try { d = await downloadDiskDump(askCopyPassword); } catch (e) {
     await setMeta('syncPaused', 'check');
-    toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Диск» → «Проверить копию».', 7000);
+    toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Настройки» → «Проверить копию на Диске».', 7000);
     updateSyncBadge(); return;
   }
   const diskHas = d && d.orders.length + (d.expenses || []).length > 0;
