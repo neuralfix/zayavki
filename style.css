@@ -166,7 +166,7 @@ main { padding: 12px 16px; max-width: 720px; margin: 0 auto; }
 .sd-card { background: rgba(240,184,79,.14); }
 .addr-row { display: grid; grid-template-columns: 1fr 76px; gap: 8px; }
 .addr-row.two { grid-template-columns: 1fr 1fr; }
-#moreAddr { margin: -6px 0 10px; }
+#moreAddr { margin: -6px 0 6px; }
 details.tg summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 details.tg pre { white-space: pre-wrap; word-break: break-word; font: 14px/1.45 system-ui, sans-serif; margin: 10px 0 0; }
 .bars.days { gap: 2px; height: 120px; }

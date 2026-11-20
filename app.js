@@ -51,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.38'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.39'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -355,10 +355,13 @@ async function renderOrderForm(id, warrantyFromId) {
       <div class="addr-row">
         <div class="field"><label for="orderAddress">Улица, дом</label><input class="input" id="orderAddress" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
         <div class="field"><label for="orderApt">Кв.</label><input class="input" id="orderApt" name="apt" value="${esc(v.apt)}" inputmode="numeric" aria-label="Квартира"></div>
-      </div>
-      <div id="addrHint"></div>`;
-  const problemAndVisit = `
-      <div class="field"><label for="orderProblem">${o ? 'Проблема' : 'Что сломалось'}</label><textarea class="input" id="orderProblem" name="problem">${esc(v.problem)}</textarea></div>
+      </div>`;
+  const addressHint = '<div id="addrHint"></div>';
+  const nameField = `
+      <div class="field"><label for="orderName">Имя</label><input class="input" id="orderName" name="name" value="${esc(v.name)}" autocapitalize="words"></div>`;
+  const problemField = `
+      <div class="field"><label for="orderProblem">${o ? 'Проблема' : 'Что сломалось'}</label><textarea class="input" id="orderProblem" name="problem">${esc(v.problem)}</textarea></div>`;
+  const visitField = `
       <div class="field"><label for="orderVisit">Когда ехать${o ? ' <span class="muted">— если клиент просит на время или на другой день</span>' : ''}</label>
         <input class="input" id="orderVisit" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}">
         <div id="conflicts"></div></div>`;
@@ -367,8 +370,7 @@ async function renderOrderForm(id, warrantyFromId) {
         <div class="phone-row"><input class="input" id="orderPhone" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
           <button type="button" class="btn sec" id="pastePh">Вставить номер</button></div>
         <div id="client"></div></div>`;
-  const clientFields = `
-      <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
+  const deviceFields = `
       <div class="field"><label>Техника</label>
         <div class="chips" id="dev">${DEVICES.map((d) => `<button type="button" class="chip ${v.device === d ? 'on' : ''}" data-v="${d}">${d}</button>`).join('')}</div>
       </div>
@@ -383,8 +385,8 @@ async function renderOrderForm(id, warrantyFromId) {
     <form id="f" autocomplete="off">
       <div class="client-hint warn" id="wbanner" ${v.isWarranty ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
       ${!o && !src ? '<div class="field"><button type="button" class="btn sec" id="pasteOrder">📋 Вставить сообщение</button></div>' : ''}
-      ${o ? phoneField + addressFields + addressDetails + clientFields + problemAndVisit
-        : addressFields + problemAndVisit + phoneField + clientFields + addressDetails}
+      ${o ? phoneField + addressFields + addressHint + addressDetails + nameField + deviceFields + problemField + visitField
+        : addressFields + addressDetails + addressHint + nameField + problemField + phoneField + visitField + deviceFields}
       <div class="field"><label>Заметки</label><textarea class="input" name="notes">${esc(v.notes)}</textarea></div>
       <div class="field"><label>Тип заявки <span class="muted" id="kindNote"></span></label>
         <div class="chips" id="kind">${KINDS.map(([k, t]) => `<button type="button" class="chip ${kindOf(v) === k ? 'on' : ''}" data-v="${k}">${t}</button>`).join('')}</div></div>
