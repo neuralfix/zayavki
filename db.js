@@ -55,14 +55,34 @@ async function dbReplaceAll(data, meta) {
         const s = t.objectStore(n); s.clear();
         for (const v of data[n] || []) s.put(v);
       }
-      const m = t.objectStore('meta');
-      for (const [k, v] of Object.entries(meta || {})) m.put(v, k);
+      _writeMetaEntries(t.objectStore('meta'), meta || {});
     } catch (e) { try { t.abort(); } catch (x) { /* уже прервана */ } reject(e); }
   });
 }
 
 const getMeta = (k) => dbGet('meta', k);
 const setMeta = (k, v) => dbPut('meta', v, k);
+
+function _writeMetaEntries(store, entries) {
+  for (const [key, value] of Object.entries(entries)) {
+    if (typeof value !== 'function') {
+      store.put(value, key);
+      continue;
+    }
+    const current = store.get(key);
+    current.onsuccess = () => store.put(value(current.result), key);
+  }
+}
+
+async function setMetaEntries(entries) {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction('meta', 'readwrite');
+    t.oncomplete = () => resolve();
+    t.onabort = () => reject(t.error || new Error('Не удалось записать настройки'));
+    _writeMetaEntries(t.objectStore('meta'), entries);
+  });
+}
 
 function uid() {
   return (self.crypto && crypto.randomUUID) ? crypto.randomUUID()
@@ -88,19 +108,49 @@ async function dbCreateOrder(rec) {
   });
 }
 
+// Правки формы и распознавания применяются к последней сохранённой версии заявки.
+async function dbUpdateOrder(id, update) {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction('orders', 'readwrite');
+    const orders = t.objectStore('orders');
+    const request = orders.get(id);
+    let result;
+    request.onsuccess = () => {
+      const current = request.result;
+      if (!current) return;
+      try {
+        const next = update(current);
+        if (next) orders.put(next);
+        result = next || current;
+      } catch (e) {
+        t.abort();
+        reject(e);
+      }
+    };
+    t.oncomplete = () => resolve(result);
+    t.onabort = () => reject(t.error || new Error('Заявка не сохранилась'));
+  });
+}
+
 // Отметка «данные изменились, надо отправить на Диск».
 async function markDirty() {
-  const v = ((await getMeta('dataVersion')) || 0) + 1;
-  await setMeta('dataVersion', v);
-  return v;
+  let version;
+  await setMetaEntries({ dataVersion: (current) => {
+    version = (current || 0) + 1;
+    return version;
+  } });
+  return version;
 }
 
 // Удалённое фото стирается с Диска не сразу, а через 14 дней: на него ещё ссылаются прошлые копии в «Истории».
 async function addPendingDelete(path) {
   if (!path) return;
-  const list = (await getMeta('pendingDeletes')) || [];
-  if (!list.some((x) => (x.path || x) === path)) list.push({ path, at: Date.now() });
-  await setMeta('pendingDeletes', list);
+  await setMetaEntries({ pendingDeletes: (current) => {
+    const list = current || [];
+    if (!list.some((x) => (x.path || x) === path)) list.push({ path, at: Date.now() });
+    return list;
+  } });
 }
 
 // Расчёты по заявке

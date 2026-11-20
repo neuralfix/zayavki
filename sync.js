@@ -101,7 +101,8 @@ async function _historyCopy(token) {
   const day = _day();
   if ((await getMeta('histDay')) === day) return;
   await _retry(() => ydMkdir(token, HIST_DIR));
-  await _retry(() => ydCopy(token, ROOT + 'data.bin', HIST_DIR + '/data-' + day + '.bin'));
+  const copied = await _retry(() => ydCopy(token, ROOT + 'data.bin', HIST_DIR + '/data-' + day + '.bin'));
+  if (!copied) return;
   await setMeta('histDay', day);
   const old = (await ydList(token, HIST_DIR)).filter((n) => /^data-\d{4}-\d\d-\d\d\.bin$/.test(n)).sort().reverse().slice(HIST_KEEP);
   for (const n of old) await _retry(() => ydDelete(token, HIST_DIR + '/' + n));
@@ -228,16 +229,38 @@ async function syncStatus() {
   };
 }
 
-function syncNow() {
-  if (self.navigator && navigator.locks) {
-    return navigator.locks.request('zayavki-disk-sync', { ifAvailable: true },
-      (lock) => (lock ? _doSync() : { status: 'busy' }));
-  }
-  return _doSync();
+function withDiskSyncLock(task, ifAvailable = false) {
+  if (!self.navigator?.locks) return task();
+  return navigator.locks.request('zayavki-disk-sync', { ifAvailable },
+    (lock) => (lock ? task() : { status: 'busy' }));
 }
 
+function syncNow() {
+  return withDiskSyncLock(_doSync, true);
+}
+
+// Фоновая отправка не должна увидеть новый ключ, пока проверка копии не поставлена на паузу.
+function beginDiskCheck(token) {
+  const entries = { syncPaused: 'check', syncError: null };
+  if (token !== undefined) entries.ydToken = token;
+  return withDiskSyncLock(() => setMetaEntries(entries));
+}
+
+const _photoPath = (id) => PHOTOS_DIR + '/' + id + '.bin';
+const _pendingDeletePath = (entry) => typeof entry === 'string' ? entry : entry.path;
 const _dueDeletes = (list) => list.filter((x) => typeof x === 'string' || Date.now() - (x.at || 0) >= PHOTO_DELETE_AFTER)
-  .map((x) => (typeof x === 'string' ? x : x.path));
+  .map(_pendingDeletePath);
+
+function _livePhotoPaths(orders, photos) {
+  const orderIds = new Set(orders.map((o) => o.id));
+  const paths = new Set();
+  for (const p of photos) {
+    if (!orderIds.has(p.orderId)) continue;
+    if (p.remotePath) paths.add(p.remotePath);
+    paths.add(_photoPath(p.id));
+  }
+  return paths;
+}
 
 async function _pending() {
   const photos = (await dbAll('photos')).filter((p) => !p.uploaded && p.blob);
@@ -290,7 +313,7 @@ async function _doSync() {
 
     // 1. Фото: имя файла — случайный номер, внутри — зашифрованный снимок
     for (const p of q.photos) {
-      const path = PHOTOS_DIR + '/' + p.id + '.bin';
+      const path = _photoPath(p.id);
       const body = new Blob([await encryptBytes(p.blob)]);
       await _retry(() => ydUpload(token, path, body));
       if (q.photos.length > 20) await _sleep(250);   // много фото подряд — не торопим Диск, иначе он блокирует папку
@@ -300,22 +323,23 @@ async function _doSync() {
       _notify({ type: 'progress', sent, total: q.photos.length, done: before + sent, all: before + q.photos.length });
     }
 
-    // 2. Сами данные. Пустую копию не отправляем, чтобы новый телефон не затёр копию на Диске.
+    // 2. После проверки Диска отправляем и пустую копию: последняя запись могла быть удалена.
     if (q.dataPending || sent) {
       const dump = await buildDump();
-      if (dump.orders.length || dump.expenses.length) {
-        await _historyCopy(token);   // прежняя копия — в «Историю»
-        const body = new Blob([await encryptBytes(JSON.stringify(dump))]);
-        await _retry(() => ydUpload(token, ROOT + 'data.bin', body));
-      }
+      await _historyCopy(token);   // прежняя копия — в «Историю»
+      const body = new Blob([await encryptBytes(JSON.stringify(dump))]);
+      await _retry(() => ydUpload(token, ROOT + 'data.bin', body));
       await setMeta('syncedVersion', q.version);
     }
 
     // 3. Удалённое в приложении (больше 14 дней назад) — в корзину Диска (там тоже только зашифрованное)
-    for (const path of q.deletes) {
-      await _retry(() => ydDelete(token, path));
-      const left = ((await getMeta('pendingDeletes')) || []).filter((x) => (x.path || x) !== path);
-      await setMeta('pendingDeletes', left);
+    if (q.deletes.length) {
+      const live = _livePhotoPaths(await dbAll('orders'), await dbAll('photos'));
+      for (const path of q.deletes) {
+        // Старые версии могли оставить в очереди фото, уже восстановленное вместе с заявкой.
+        if (!live.has(path)) await _retry(() => ydDelete(token, path));
+        await setMetaEntries({ pendingDeletes: (list) => (list || []).filter((x) => _pendingDeletePath(x) !== path) });
+      }
     }
 
     await setMeta('lastSync', Date.now());
@@ -352,19 +376,25 @@ async function restoreDump(d, fromDisk) {
   if (bad(d.orders, ['id']) || bad(expenses, ['id']) || bad(photos, ['id', 'orderId']) || !uniq(d.orders) || !uniq(expenses) || !uniq(photos)) {
     throw new Error('Копия повреждена — данные в телефоне не тронуты');
   }
-  // 2. Фото из телефона не теряем: снимки копии берут картинку из телефона, остальные снимки телефона остаются
-  const local = await dbAll('photos');
-  const byId = new Map(local.map((p) => [p.id, p]));
-  const inDump = new Set(photos.map((p) => p.id));
-  const allPhotos = photos.map((p) => ({ ...p, blob: byId.get(p.id)?.blob || null }))
-    .concat(local.filter((p) => !inDump.has(p.id)));
-  const maxNum = d.orders.reduce((m, o) => Math.max(m, o.num || 0), 0);
-  const v = ((await getMeta('dataVersion')) || 0) + 1;
-  // repeatsMarked сбрасываем: в старой копии (до 1.28) повторные заявки ещё не отмечены
-  const meta = { nextNum: Math.max(d.nextNum || 1, maxNum + 1), dataVersion: v, repeatsMarked: null };
-  if (fromDisk) meta.syncedVersion = v;
-  // 3. Заменяем одной операцией
-  await dbReplaceAll({ orders: d.orders, expenses, photos: allPhotos }, meta);
+  await withDiskSyncLock(async () => {
+    // 2. Фото из телефона не теряем: снимки копии берут картинку из телефона, остальные снимки телефона остаются
+    const local = await dbAll('photos');
+    const byId = new Map(local.map((p) => [p.id, p]));
+    const inDump = new Set(photos.map((p) => p.id));
+    const allPhotos = photos.map((p) => ({ ...p, blob: byId.get(p.id)?.blob || null }))
+      .concat(local.filter((p) => !inDump.has(p.id)));
+    const maxNum = d.orders.reduce((m, o) => Math.max(m, o.num || 0), 0);
+    const v = ((await getMeta('dataVersion')) || 0) + 1;
+    const live = _livePhotoPaths(d.orders, allPhotos);
+    // repeatsMarked сбрасываем: в старой копии (до 1.28) повторные заявки ещё не отмечены
+    const meta = {
+      nextNum: Math.max(d.nextNum || 1, maxNum + 1), dataVersion: v, repeatsMarked: null,
+      pendingDeletes: (list) => (list || []).filter((x) => !live.has(_pendingDeletePath(x))),
+    };
+    if (fromDisk) meta.syncedVersion = v;
+    // 3. Заменяем данные и очередь фото одной операцией, пока отправка ждёт.
+    await dbReplaceAll({ orders: d.orders, expenses, photos: allPhotos }, meta);
+  });
   // 4. Разметить повторные заявки, если копия старая (в приложении; в фоновой части этой функции нет)
   if (typeof markOldRepeats === 'function') { try { await markOldRepeats(); } catch (e) { console.warn('repeats', e); } }
 }

@@ -5,9 +5,11 @@
 
 let _streets = null;      // [{ label, key, loc, houses: [] }]
 let _byLabel = null;      // label -> улица
+let _districtPlaces = null;
 let _streetsLoading = null;
 
 const _norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^0-9a-zа-я]+/g, ' ').trim();
+const _labelKey = (s) => s.toLowerCase().replace(/\s*,\s*/g, ', ').trim();
 // Слова, которые не ищем: тип улицы. «ул лен» и «лен» находят одно и то же.
 const _TYPE_WORDS = new Set(['ул', 'улица', 'пр', 'пр-т', 'просп', 'проспект', 'пер', 'переулок', 'б', 'р', 'б-р', 'бульвар',
   'пр-д', 'проезд', 'ш', 'шоссе', 'туп', 'тупик', 'пл', 'площадь', 'наб', 'набережная', 'мкр', 'микрорайон', 'д', 'дом',
@@ -62,7 +64,8 @@ function loadStreets() {
         const full = !label ? loc : (loc && loc !== 'Уфа' ? loc + ', ' + label : label);
         return { label: full, key: ' ' + _norm(full), loc, houses: h ? h.split('|') : [] };
       });
-      _byLabel = new Map(_streets.map((s) => [s.label.toLowerCase(), s]));
+      _byLabel = new Map(_streets.map((s) => [_labelKey(s.label), s]));
+      _districtPlaces = new Set(d.loc.filter((loc) => loc !== 'Уфа').map(_norm));
       return _streets;
     }).catch((e) => { _streetsLoading = null; console.warn('streets', e); return []; });
   }
@@ -80,14 +83,25 @@ function _matches(key, toks) {
 // Какая улица из справочника уже стоит в начале адреса и что написано после неё
 function _splitKnownStreet(value) {
   if (!_byLabel) return null;
-  const low = value.toLowerCase();
-  let i = low.indexOf(', ');
+  let i = value.lastIndexOf(',');
   while (i !== -1) {
-    const s = _byLabel.get(low.slice(0, i));
-    if (s) return { street: s, rest: value.slice(i + 2) };
-    i = low.indexOf(', ', i + 2);
+    const s = _byLabel.get(_labelKey(value.slice(0, i)));
+    if (s) return { street: s, rest: value.slice(i + 1).trimStart() };
+    i = i > 0 ? value.lastIndexOf(',', i - 1) : -1;
   }
   return null;
+}
+
+function mapsAddress(address) {
+  const value = String(address || '').trim();
+  if (!value || /^(?:уфа|уфимский\s+(?:район|р-н))(?=[\s,]|$)|^(?:г\.|город)\s*[а-яё]/i.test(value)) return value;
+  const [head, next = ''] = value.split(',', 2).map((part) => part.trim());
+  const streetType = /^(?:ул|улица|пр|пр-т|проспект|пер|переулок|б-р|бульвар|ш|шоссе|туп|пл|наб|мкр)(?=[\s.]|$)/i;
+  const houseDetails = /^(?:д|дом|к|корпус|кв|квартира|под|подъезд|эт|этаж)(?=[\s.\d]|$)/i;
+  const namedPlace = /^(?:д\.|деревня|с\.|село|п\.|пос\.|пос[её]лок)\s*[а-яё]/i;
+  const district = _districtPlaces?.has(_norm(head)) || namedPlace.test(head) ||
+    (!streetType.test(head) && (streetType.test(next) || (/^[А-ЯЁA-Z]/.test(head) && /^\D+\s+\d/.test(next) && !houseDetails.test(next))));
+  return (district ? 'Уфимский район, ' : 'Уфа, ') + value;
 }
 
 function _houseSort(a, b) {

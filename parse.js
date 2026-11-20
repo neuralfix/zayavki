@@ -8,15 +8,20 @@ const PARSE_DEV = [
   ['Телевизор', /(^|[^а-яёa-z])(тв|телевизор[а-яё]*|телик|tv)(?![а-яёa-z])/i],
 ];
 const PARSE_LABEL = [
-  ['phone', /^(тел(ефон)?|номер|моб(ильный)?|т\.)\s*[:.\-–]?\s*/i],
-  ['address', /^(адрес|адр)\s*[:.\-–]?\s*/i],
+  ['phone', /^(тел(ефон)?|номер|моб(ильный)?|т\.)(?![а-яёa-z])\s*[:.\-–]?\s*/i],
+  ['address', /^(адрес|адр)(?![а-яёa-z])\s*[:.\-–]?\s*/i],
   ['name', /^(имя|клиент|фио|ф\.и\.о\.?|контакт(ное лицо)?|заказчик)\s*[:.\-–]\s*/i],
   ['device', /^(техника|устройство|прибор|оборудование|что ремонтир\w*)\s*[:.\-–]\s*/i],
   ['model', /^(марка|модель|марка\s*\/?\s*модель)\s*[:.\-–]\s*/i],
   ['problem', /^(проблема|неисправность|описание|поломка|что случилось|причина( обращения)?|комментарий)\s*[:.\-–]\s*/i],
   ['when', /^(время|дата|когда|дата и время|визит|выезд)\s*[:.\-–]\s*/i],
 ];
-const PARSE_WEEK = ['воскресенье', 'понедельник', 'вторник', 'сред', 'четверг', 'пятниц', 'суббот'];
+const PARSE_WEEK = ['воскресень[ея]', 'понедельник', 'вторник', 'сред[ауые]', 'четверг', 'пятниц[ауые]', 'суббот[ауые]']
+  .map((day) => new RegExp('(^|[^а-яa-z])(?:(?:в|во|на)\\s+)?' + day + '(?![а-яa-z])'));
+const PARSE_HOUR_END = '(?:\\s*ч(?:ас(?:а|ов)?)?(?![а-я]))?(?:\\s*(?:до|[-–—])\\s*(?:[01]?\\d|2[0-3])(?:[:.][0-5]\\d)?(?![\\d.:]))?';
+const PARSE_CLOCK = new RegExp('(^|[^\\d.:а-яa-z])(?:(?:в|к|с|после|около|на)\\s+)?([01]?\\d|2[0-3])[:.]([0-5]\\d)(?![\\d.:])' + PARSE_HOUR_END);
+const PARSE_BARE_HOUR = new RegExp('(^|[\\s,;])(?:в|к|с|после|около|на)\\s+(0?[7-9]|1\\d|2[0-2])(?![\\d.:])' + PARSE_HOUR_END);
+const PARSE_ADDRESS_PART = /^(?:ул|улица|пр|пр-?т|проспект|пер|переулок|б-р|бульвар|ш\.|шоссе|мкр|д\.|дом|кв|корп|под|подъезд|эт|этаж|г\.|село|с\.|п\.|дер)(?=[\s.\d]|$)/i;
 
 function parseDeviceOf(t) {
   for (const [name, re] of PARSE_DEV) if (re.test(t)) return name;
@@ -26,30 +31,40 @@ function parseDeviceOf(t) {
 // «завтра в 14:00», «20.11 к 12», «в пятницу с 15 до 17», «сегодня 16.30» → время выезда
 function parseWhen(line, now = new Date()) {
   let t = line.toLowerCase().replace(/ё/g, 'е');
-  let day = null;
+  const spans = [];
+  // Запоминаем точные границы даты и времени, оставляя номер дома и остальной текст на месте.
+  const mark = (match) => {
+    const start = match.index + match[1].length;
+    const end = match.index + match[0].length;
+    spans.push({ start, end });
+    t = t.slice(0, start) + ' '.repeat(end - start) + t.slice(end);
+  };
   let m;
-  if (/послезавтра/.test(t)) day = 2;
-  else if (/завтра/.test(t)) day = 1;
-  else if (/сегодня/.test(t)) day = 0;
   let date = null;
-  if (day !== null) date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + day);
-  if (!date && (m = t.match(/(^|[^\d])(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?![\d])/)) && +m[3] >= 1 && +m[3] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
-    let y = m[4] ? +m[4] : now.getFullYear(); if (y < 100) y += 2000;
-    date = new Date(y, +m[3] - 1, +m[2]);
-    if (date.getDate() !== +m[2] || date.getMonth() !== +m[3] - 1) return null;   // 31.02 и т. п.
-    if (!m[4] && date < new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)) date.setFullYear(y + 1);
-    t = t.replace(m[0], m[1] + ' ');   // чтобы «20.11» не приняли за время
-  }
-  if (!date) {
-    const wi = PARSE_WEEK.findIndex((w) => new RegExp('(^|\\s)(в|во|на)?\\s*' + w).test(t));
-    if (wi >= 0) { const add = (wi - now.getDay() + 7) % 7 || 7; date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + add); }
+  if ((m = t.match(/(^|[^а-яa-z])(?:на\s+)?(послезавтра|завтра|сегодня)(?![а-яa-z])/))) {
+    const day = { сегодня: 0, завтра: 1, послезавтра: 2 }[m[2]];
+    date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + day);
+    mark(m);
+  } else {
+    const wi = PARSE_WEEK.findIndex((re) => (m = t.match(re)));
+    if (wi >= 0) {
+      const day = (wi - now.getDay() + 7) % 7 || 7;
+      date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + day);
+      mark(m);
+    } else if ((m = t.match(/(^|[^\d.:])(?:на\s+)?(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?(?![\d.:])/)) && +m[3] >= 1 && +m[3] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+      let y = m[4] ? +m[4] : now.getFullYear(); if (y < 100) y += 2000;
+      date = new Date(y, +m[3] - 1, +m[2]);
+      if (date.getDate() !== +m[2] || date.getMonth() !== +m[3] - 1) return null;   // 31.02 и т. п.
+      if (!m[4] && date < new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)) date.setFullYear(y + 1);
+      mark(m);
+    }
   }
   // время: «14:00», «14.30» (не дата), «в 14», «к 9», «с 15 до 17», «после 18»
   let hh = null, mm = 0;
-  if ((m = t.match(/(^|[^\d.])([01]?\d|2[0-3]):(\d{2})(?![\d])/)) || (m = t.match(/(^|[^\d.])([01]?\d|2[0-3])\.([0-5]\d)(?![\d.])/))) {
-    hh = +m[2]; mm = +m[3];
+  if ((m = t.match(PARSE_CLOCK) || t.match(PARSE_BARE_HOUR))) {
+    hh = +m[2]; mm = +(m[3] || 0);
+    mark(m);
   }
-  if (hh === null && (m = t.match(/(^|\s)(в|к|с|после|около|на)\s+([01]?\d|2[0-3])(\s*(ч|час[а-я]*))?(?![\d.:])/)) && +m[3] >= 7 && +m[3] <= 22) hh = +m[3];   // «с 2 сторон» — не время
   if (hh === null && !date) return null;
   if (!date) {   // только время: сегодня, а если уже прошло — завтра
     date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -57,7 +72,15 @@ function parseWhen(line, now = new Date()) {
   }
   if (hh !== null && hh < 8 && /(вечер|после обеда|дня)/.test(t)) hh += 12;
   date.setHours(hh !== null ? hh : 0, hh !== null ? mm : 0, 0, 0);
-  return { ts: date.getTime(), timeKnown: hh !== null };
+  // Восстанавливаем регистр и букву «ё» в тексте, который остаётся в заявке.
+  const remaining = line.split('');
+  for (const { start, end } of spans) remaining.fill(' ', start, end);
+  return {
+    ts: date.getTime(),
+    timeKnown: hh !== null,
+    text: spans.map(({ start, end }) => line.slice(start, end)).join(' '),
+    rest: remaining.join('').replace(/([,;]\s*){2,}/g, ', ').replace(/\s+/g, ' ').replace(/^[\s,.;:–—-]+|[\s,.;:–—-]+$/g, ''),
+  };
 }
 
 // «Ленина 12-34, 2 под., 5 эт.» → улица и дом, кв., подъезд, этаж
@@ -81,19 +104,30 @@ function parseSplitAddress(addr) {
 }
 
 const parseLooksAddress = (s) => /\d/.test(s) && /[а-яё]{3,}/i.test(s) &&
-  (/(ул\.?|улица|пр-?т|проспект|пер\.?|б-р|бульвар|ш\.|шоссе|мкр|д\.|дом|кв\.?)\s*/i.test(s) || /^[А-ЯЁ0-9][а-яё.\s-]+\d+/.test(s.trim()) || /\d+\s*-\s*\d+/.test(s));
+  (s.split(',').some((part) => PARSE_ADDRESS_PART.test(part.trim()) || /^[А-ЯЁ0-9][а-яё.\s-]+\d+/.test(part.trim())) ||
+    /^[а-яё]+(?:\s*,\s*|\s+)\d+[а-яё]?(?=[\s,/-]|$)/i.test(s) || /\d+\s*-\s*\d+/.test(s));
 const parseLooksName = (s) => /^[А-ЯЁ][а-яё]+(\s+[А-ЯЁ][а-яё]+){0,2}$/.test(s.trim()) && !parseDeviceOf(s);
+const parseLabelOf = (s) => PARSE_LABEL.find(([key, re]) => re.test(s) && (key !== 'phone' || PHONE_RE.test(s)));
 
 function parseOrderText(text) {
   const r = { phone: '', name: '', address: '', apt: '', entrance: '', floor: '', device: '', model: '', problem: '', visitAt: null, whenNote: '' };
   const problem = [];
-  const lines = String(text || '').replace(/\r/g, '').split('\n')
-    .map((l) => l.replace(/[\u{1F300}-\u{1FAFF}☀-➿️]/gu, '').replace(/^[\s•*·\->–—]+/, '').trim()).filter(Boolean);
+  const lines = String(text || '').replace(/\r/g, '').split(/[\n;]|\s+\/\s+/)
+    .map((l) => l.replace(/[\u{1F300}-\u{1FAFF}☀-➿️]/gu, '').replace(/^[\s•*·\->–—]+/, '').trim()).filter(Boolean)
+    .flatMap((line) => {
+      // «Адрес: Ленина, 12, Телефон: …, Время: …» — запятая внутри адреса остаётся.
+      const parts = [];
+      for (const part of line.split(',').map((p) => p.trim())) {
+        if (!parts.length || parseLabelOf(part)) parts.push(part);
+        else parts[parts.length - 1] += ', ' + part;
+      }
+      return parts;
+    });
   let headDone = false;
   for (let line of lines) {
     // подписи «Адрес: …», «Телефон: …»
-    let label = '';
-    for (const [k, re] of PARSE_LABEL) if (re.test(line)) { label = k; line = line.replace(re, '').trim(); break; }
+    let [label = '', labelPattern] = parseLabelOf(line) || [];
+    if (labelPattern) line = line.replace(labelPattern, '').trim();
     // телефон — где угодно в строке
     const pm = line.match(PHONE_RE);
     if (pm && digits(pm[0]).length >= 10) {
@@ -102,15 +136,13 @@ function parseOrderText(text) {
       if (!line) continue;
       if (label === 'phone') label = '';
     }
-    if (label === 'when' || (!label && /(сегодня|завтра|послезавтра|\d{1,2}[:.]\d{2}|(^|\s)(в|к|с|после)\s+\d{1,2}(\s|$|ч)|понедельник|вторник|сред[ау]|четверг|пятниц|суббот|воскресень)/i.test(line) && line.length < 60)) {
+    if (label === 'when' || label === 'address' || !label) {
       const w = parseWhen(line);
-      if (w && !w.timeKnown) { r.whenNote = 'Когда: ' + line; continue; }   // день без часа — в заметки, час не выдумываем
-      if (w && !r.visitAt) {
-        r.visitAt = w.ts;
-        if (label === 'when') continue;
-        const rest = line.replace(/(послезавтра|завтра|сегодня|(в|во|на)?\s*(понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресень[ея]))/i, '').replace(/(в|к|с|после|около)?\s*\d{1,2}([:.]\d{2})?(\s*(ч|час\w*))?(\s*(до|-)\s*\d{1,2}([:.]\d{2})?)?/i, '').replace(/^[\s,.;:–-]+|[\s,.;:–-]+$/g, '');
-        if (!rest || rest.length < 4) continue;
-        line = rest;
+      if (w && (!w.timeKnown || !r.visitAt)) {
+        if (w.timeKnown) r.visitAt = w.ts;
+        else r.whenNote = 'Когда: ' + (label === 'when' ? line : w.text);
+        if (label === 'when' || !w.rest) continue;
+        line = w.rest;
       }
     }
     if (label === 'name') { r.name = line; continue; }
@@ -121,13 +153,22 @@ function parseOrderText(text) {
       headDone = true;
       // «Ленина 12-34, Мария, хк» — адрес, имя и техника в одной строке
       const addr = [];
-      for (let p of line.split(',').map((x) => x.trim()).filter(Boolean)) {
+      const parts = line.split(',').map((x) => x.trim()).filter(Boolean);
+      for (let i = 0; i < parts.length; i++) {
+        let p = parts[i];
         const dev = parseDeviceOf(p);
-        if (dev && !/\d/.test(p) && p.length <= 22) { r.device = r.device || dev; continue; }
         if (dev && !r.device) r.device = dev;
+        if (dev && !parseLooksAddress(p)) {
+          const re = PARSE_DEV.find(([name]) => name === dev)[1];
+          if (p.replace(re, '$1').replace(/[\s.:–—-]+/g, '') !== '') problem.push(p);
+          continue;
+        }
         p = p.replace(/\s+(хк|сма|см|тв|мк)\.?$/i, '').trim();
-        if (!r.name && addr.length && parseLooksName(p)) { r.name = p; continue; }
-        if (addr.length && !/\d/.test(p) && /^[а-яё]/.test(p) && !/^(ул|улица|пр|пер|кв|под|эт|д\.|дом|корп|мкр|г\.|село|с\.|п\.|дер)/i.test(p)) { problem.push(p); continue; }
+        if (addr.length && !/\d/.test(p) && !PARSE_ADDRESS_PART.test(p) && !/^(?:(?:д\.?|дом)\s*)?\d/.test(parts[i + 1] || '')) {
+          if (!r.name && parseLooksName(p)) r.name = p;
+          else problem.push(p);
+          continue;
+        }
         addr.push(p);
       }
       Object.assign(r, parseSplitAddress(addr.join(', ').replace(/^(г\.?\s*уфа|уфа)\s*,\s*/i, '')));

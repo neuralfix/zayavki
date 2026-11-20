@@ -312,7 +312,12 @@ const SCAN_PRIVATE = /(ДОГОВОР|ЗАКАЗЧИК|ИСПОЛНИТЕЛ|ПА
 // Признаки адреса и имени с отчеством. Шильдик с адресом завода тоже пропустится — так безопаснее.
 const SCAN_ADDR = /(^|[^А-ЯЁ])(УЛ\.|УЛИЦА|КВ\.|КВАРТИР|ПОДЪЕЗД|ЭТАЖ|ДОМ\s*\d|Д\.\s*\d|ПР-?Т|ПРОСПЕКТ|ПЕР\.|ПЕРЕУЛОК|МКР|МИКРОРАЙОН)/;
 const SCAN_PATRONYMIC = /[А-ЯЁ]{3,}(ОВИЧ|ЕВИЧ|ОВНА|ЕВНА|ИЧНА|ИНИЧНА)(?![А-ЯЁ])/;
-const SCAN_PHONE =/(\+7|8)\D{0,3}9\d\d\D{0,3}\d{3}\D{0,2}\d{2}\D{0,2}\d{2}/;
+const SCAN_PHONES = [
+  /(\+7|8)\D{0,3}9\d\d\D{0,3}\d{3}\D{0,2}\d{2}\D{0,2}\d{2}/,
+  // Городской телефон Уфы с кодом 347 или отдельный местный номер в формате 123-45-67.
+  /(?:^|[^\p{L}\d–—-])(?:(?:\+7|8)[\s–—-]*)?(?:\(\s*347\s*\)|347)[\s–—-]*\d{3}[\s–—-]*\d{2}[\s–—-]*\d{2}(?![\p{L}\d–—-])/u,
+  /(?:^|[^\p{L}\d–—-])\d{3}\s*[-–—]\s*\d{2}\s*[-–—]\s*\d{2}(?![\p{L}\d–—-])/u,
+];
 const SCAN_PART = /(COMPRESSOR|КОМПРЕССОР|EMBRACO|DANFOSS|SECOP|JIAXIPERA|HUAYI|DONPER|CUBIGEL|TECUMSEH|WANBAO|\bLBP\b|\bHBP\b|THERMOSTAT|ТЕРМОСТАТ|RANCO|\bATEA\b|\bRELAY\b|(^|[^А-ЯЁ])РЕЛЕ(?![А-ЯЁ])|\bPCB\b|WELLING|NIDEC|ASKOLL|LEILI|HANYU|PLASET|ТАЙМЕР)/i; // наклейки компрессора, насоса, мотора, платы
 const SCAN_PLATE = [OCR_KEY, OCR_TYPE_KEY, /\d\s?(V|В)\b|VAC|~\s?\d/i, /\d\s?(HZ|ГЦ)/i, /\d\s?(W|ВТ|KW|КВТ)\b/i, /\d\s?(KG|КГ)\b/i,
   /R-?(600|134|12)A?\b/i, /(ХЛАДАГЕНТ|REFRIGERANT|КЛИМАТИЧ|CLIMAT|КЛАСС|CLASS)/i, /(MADE IN|СДЕЛАНО|ИЗГОТОВ|PRODUCED)/i, OCR_DEVICE,
@@ -322,7 +327,9 @@ const SCAN_PLATE = [OCR_KEY, OCR_TYPE_KEY, /\d\s?(V|В)\b|VAC|~\s?\d/i, /\d\s?(H
 function screenPlate(text) {
   const t = String(text || '');
   const cyr = t.toUpperCase().replace(/[ABEKMHOPCTXY]/g, (ch) => LAT2CYR[ch]);
-  if (SCAN_PRIVATE.test(cyr) || SCAN_ADDR.test(cyr) || SCAN_PATRONYMIC.test(cyr) || SCAN_PHONE.test(t)) return { kind: 'private', n: 0 };
+  if (SCAN_PRIVATE.test(cyr) || SCAN_ADDR.test(cyr) || SCAN_PATRONYMIC.test(cyr) || SCAN_PHONES.some((re) => re.test(t))) {
+    return { kind: 'private', n: 0 };
+  }
   if (SCAN_PART.test(t) || SCAN_PART.test(cyr)) return { kind: 'part', n: 0 };
   const n = SCAN_PLATE.filter((re) => re.test(t)).length + (plateCandidates(t).brand ? 1 : 0);
   return { kind: n >= 2 ? 'plate' : 'none', n };
@@ -368,12 +375,27 @@ async function _autoPlate(orderId, photoIds, onStep) {
     const text = await cloudOcrText(p.blob, conf);
     if (screenPlate(text).kind !== 'plate') continue;
     const r = plateCandidates(text);
-    const o = await dbGet('orders', orderId);
-    if (!o) return null;
-    if (!o.device && r.device) { o.device = r.device; o.deviceAuto = true; got.device = r.device; }
     const sure = r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));
-    if (!(o.model || '').trim() && sure) { o.model = plateLabel(r.brand, r.models[0]); o.modelAuto = true; got.model = o.model; }
-    if (got.device || got.model) { o.updatedAt = Date.now(); await dbPut('orders', o); await markDirty(); }
+    let filled = false;
+    const o = await dbUpdateOrder(orderId, (current) => {
+      if (!current.device && r.device) {
+        current.device = r.device;
+        current.deviceAuto = true;
+        got.device = current.device;
+        filled = true;
+      }
+      if (!(current.model || '').trim() && sure) {
+        current.model = plateLabel(r.brand, r.models[0]);
+        current.modelAuto = true;
+        got.model = current.model;
+        filled = true;
+      }
+      if (!filled) return null;
+      current.updatedAt = Date.now();
+      return current;
+    });
+    if (!o) return null;
+    if (filled) await markDirty();
     if ((o.model || '').trim() && o.device) break;   // всё заполнено — остальные фото не нужны
   }
   return got.device || got.model ? got : null;

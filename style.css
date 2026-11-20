@@ -73,6 +73,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .top-save:disabled { opacity: .6; }
 .top-save[hidden], .top-r[hidden] { display: none; }
 @media (prefers-color-scheme: dark) { .top-save { background: #5cc3d6; color: #062228; } }
+@media (max-width: 340px) {
+  .top { gap: 6px; padding-inline: 12px; }
+  .top h1 { font-size: 17px; }
+  .top-save { padding-inline: 10px; }
+}
 .top-r { flex: none; display: flex; justify-content: flex-end; }
 .top-r .sync { font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
 /* Предупреждение Диска — отдельной строкой под шапкой */
@@ -337,6 +342,8 @@ dialog.pw::backdrop { background: rgba(0,0,0,.55); }
 dialog.pw h3 { margin: 0 0 8px; font-size: 18px; }
 dialog.pw .show { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; }
 dialog.pw .btns { margin-top: 14px; }
+.paste-conflicts { margin: 12px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.paste-conflicts li + li { margin-top: 8px; }
 .ph.remote { cursor: pointer; }
 
 .note { font-size: 14px; color: var(--muted); }

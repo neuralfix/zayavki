@@ -51,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.37'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.38'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -124,7 +124,11 @@ async function updateSyncBadge() {
   let icon = '☁ ✓', cls = '', alert = '';
   if (!s.connected) { icon = '☁ !'; cls = 'warn'; alert = 'Автокопии на Яндекс Диск выключены. Заявки сохраняются в телефоне'; }
   else if (!s.hasKey) { icon = '🔒'; cls = 'warn'; alert = 'Задайте пароль — без него на Диск ничего не уходит'; }
-  else if (s.paused) { icon = '☁ ⏸'; cls = 'warn'; alert = 'Отправка на Диск на паузе — выберите, какую копию оставить'; }
+  else if (s.paused) {
+    icon = '☁ ⏸'; cls = 'warn';
+    alert = s.paused === 'both' ? 'Отправка на Диск на паузе — выберите, какую копию оставить'
+      : comparingDisk ? 'Сравниваю копии телефона и Диска' : 'Отправка на Диск на паузе — проверьте копию';
+  }
   else if (s.error) { icon = '☁ !'; cls = 'err'; alert = 'Ошибка Диска: ' + s.error; }
   else if (pending) { icon = navigator.onLine ? '☁ ↑' + (s.pendingPhotos || '') : '☁ ⏸'; }
   b.className = 'sync' + (cls ? ' ' + cls : '');
@@ -177,7 +181,7 @@ const sdLine = (o) => o.sd ? ['на СД с ' + dayShort(o.sd.at), o.sd.what, o.
 // Для Яндекс Карт: улица Уфы → «Уфа, …», село района («Миловка, ул. …») → «Уфимский район, …». Без квартиры.
 // Есть подъезд — «…, подъезд 2»: Яндекс ведёт прямо к нему (если знает подъезды этого дома, иначе — к дому).
 const entranceNum = (o) => (String(o.entrance || '').match(/\d+/) || [''])[0];
-const mapsQuery = (o) => (/^[А-ЯЁA-Z][^,]*,/.test(o.address) && !/^(ул|улица|пр|пр-т|проспект|пер|переулок|б-р|ш|шоссе|туп|пл|наб|мкр)(?=[\s.,]|$)/i.test(o.address) ? 'Уфимский район, ' : 'Уфа, ') + o.address +
+const mapsQuery = (o) => mapsAddress(o.address) +
   (entranceNum(o) ? ', подъезд ' + entranceNum(o) : '');
 // Android: сразу Яндекс Навигатор; если его нет — Яндекс Карты. На компьютере — Карты.
 function routeHref(o) {
@@ -333,70 +337,89 @@ async function visitConflicts(ts, exceptId) {
     .map((x) => ({ o: x, near: Math.abs(x.visitAt - ts) < hours * 3600e3 }));
 }
 
+const ORDER_DRAFT_KEY = 'newOrderDraft';
+function readOrderDraft() {
+  try { return JSON.parse(localStorage.getItem(ORDER_DRAFT_KEY)) || {}; } catch (e) { return {}; }
+}
+
 async function renderOrderForm(id, warrantyFromId) {
   const o = id ? await dbGet('orders', id) : null;
   if (id && !o) return go('#/orders', true);
   const src = !o && warrantyFromId ? await dbGet('orders', warrantyFromId) : null;
   setTitle(o ? 'Заявка №' + o.num : src ? 'По гарантии' : 'Новая заявка', true);
+  const keepsDraft = !o && !warrantyFromId;
   const v = o || (src ? { phone: src.phone, name: src.name, address: src.address, apt: src.apt, entrance: src.entrance, floor: src.floor,
-    device: src.device, model: src.model, isWarranty: true, warrantyOf: src.id } : {});
+    device: src.device, model: src.model, isWarranty: true, warrantyOf: src.id } : keepsDraft ? readOrderDraft() : {});
   let warrantyOf = v.warrantyOf || null;
-  view.innerHTML = `
-    <form id="f" autocomplete="off">
-      <div class="client-hint warn" id="wbanner" ${v.isWarranty ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
-      <div class="field"><label>Телефон</label>
-        <div class="phone-row"><input class="input" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
-          <button type="button" class="btn sec" id="pastePh">📋 Вставить</button></div>
-        <div id="client"></div></div>
+  const addressFields = `
       <div class="addr-row">
-        <div class="field"><label>Улица, дом</label><input class="input" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
-        <div class="field"><label>Кв.</label><input class="input" name="apt" value="${esc(v.apt)}" inputmode="numeric"></div>
+        <div class="field"><label for="orderAddress">Улица, дом</label><input class="input" id="orderAddress" name="address" value="${esc(v.address)}" placeholder="Начните вводить улицу"></div>
+        <div class="field"><label for="orderApt">Кв.</label><input class="input" id="orderApt" name="apt" value="${esc(v.apt)}" inputmode="numeric" aria-label="Квартира"></div>
       </div>
-      <div id="addrHint"></div>
-      <button type="button" class="link small" id="moreAddr" ${v.entrance || v.floor ? 'hidden' : ''}>+ подъезд, этаж</button>
-      <div class="addr-row two" id="addrMore" ${v.entrance || v.floor ? '' : 'hidden'}>
-        <div class="field"><label>Подъезд</label><input class="input" name="entrance" value="${esc(v.entrance)}" inputmode="numeric"></div>
-        <div class="field"><label>Этаж</label><input class="input" name="floor" value="${esc(v.floor)}" inputmode="numeric"></div>
-      </div>
+      <div id="addrHint"></div>`;
+  const problemAndVisit = `
+      <div class="field"><label for="orderProblem">${o ? 'Проблема' : 'Что сломалось'}</label><textarea class="input" id="orderProblem" name="problem">${esc(v.problem)}</textarea></div>
+      <div class="field"><label for="orderVisit">Когда ехать${o ? ' <span class="muted">— если клиент просит на время или на другой день</span>' : ''}</label>
+        <input class="input" id="orderVisit" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}">
+        <div id="conflicts"></div></div>`;
+  const phoneField = `
+      <div class="field"><label for="orderPhone">Телефон</label>
+        <div class="phone-row"><input class="input" id="orderPhone" name="phone" type="tel" inputmode="tel" value="${esc(v.phone)}">
+          <button type="button" class="btn sec" id="pastePh">Вставить номер</button></div>
+        <div id="client"></div></div>`;
+  const clientFields = `
       <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(v.name)}" autocapitalize="words"></div>
       <div class="field"><label>Техника</label>
         <div class="chips" id="dev">${DEVICES.map((d) => `<button type="button" class="chip ${v.device === d ? 'on' : ''}" data-v="${d}">${d}</button>`).join('')}</div>
       </div>
-      <div class="field"><label>Марка / модель</label><input class="input" name="model" value="${esc(v.model)}"></div>
-      <div class="field"><label>Проблема</label><textarea class="input" name="problem">${esc(v.problem)}</textarea></div>
-      <div class="field"><label>Когда ехать <span class="muted">— если клиент просит на время или на другой день</span></label>
-        <input class="input" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}">
-        <div id="conflicts"></div></div>
+      <div class="field"><label>Марка / модель</label><input class="input" name="model" value="${esc(v.model)}"></div>`;
+  const addressDetails = `
+      <button type="button" class="link small" id="moreAddr" ${v.entrance || v.floor ? 'hidden' : ''}>+ подъезд, этаж</button>
+      <div class="addr-row two" id="addrMore" ${v.entrance || v.floor ? '' : 'hidden'}>
+        <div class="field"><label>Подъезд</label><input class="input" name="entrance" value="${esc(v.entrance)}" inputmode="numeric"></div>
+        <div class="field"><label>Этаж</label><input class="input" name="floor" value="${esc(v.floor)}" inputmode="numeric"></div>
+      </div>`;
+  view.innerHTML = `
+    <form id="f" autocomplete="off">
+      <div class="client-hint warn" id="wbanner" ${v.isWarranty ? '' : 'hidden'}>${src ? `Заявка по гарантии к №${src.num}${src.warrantyDays ? ' (гарантия ' + warrantyText(src) + ')' : ''}` : (v.isWarranty ? 'Заявка по гарантии' : '')}</div>
+      ${!o && !src ? '<div class="field"><button type="button" class="btn sec" id="pasteOrder">📋 Вставить сообщение</button></div>' : ''}
+      ${o ? phoneField + addressFields + addressDetails + clientFields + problemAndVisit
+        : addressFields + problemAndVisit + phoneField + clientFields + addressDetails}
       <div class="field"><label>Заметки</label><textarea class="input" name="notes">${esc(v.notes)}</textarea></div>
       <div class="field"><label>Тип заявки <span class="muted" id="kindNote"></span></label>
         <div class="chips" id="kind">${KINDS.map(([k, t]) => `<button type="button" class="chip ${kindOf(v) === k ? 'on' : ''}" data-v="${k}">${t}</button>`).join('')}</div></div>
       <button class="btn" type="submit">${o ? 'Сохранить' : 'Создать заявку'}</button>
-      ${!o && !src ? '<button type="button" class="link small" id="pasteOrder" style="margin-top:4px">📋 Вставить заявку из сообщения</button>' : ''}
+      ${keepsDraft ? '<button type="button" class="link small" id="discardDraft" hidden>Очистить черновик</button>' : ''}
     </form>`;
+  const form = $('#f');
+  let saving = false;
   // «Создать» / «Сохранить» — ещё и в шапке: она всегда видна, листать вниз во время разговора не нужно
   const ts = $('#topSave');
   // дата и время остаются; на время формы прячем значок Диска — иначе кнопка не помещается
   ts.textContent = o ? 'Сохранить' : 'Создать'; ts.hidden = false; ts.disabled = false; $('.top-r').hidden = true;
-  ts.onclick = () => $('#f').requestSubmit();
+  ts.onclick = () => form.requestSubmit();
   let device = v.device || '';
-  $$('#dev .chip').forEach((c) => c.onclick = () => {
-    device = device === c.dataset.v ? '' : c.dataset.v;
+  const setDevice = (value) => {
+    device = value;
     $$('#dev .chip').forEach((x) => x.classList.toggle('on', x.dataset.v === device));
-  });
+  };
+  $$('#dev .chip').forEach((c) => c.onclick = () => { setDevice(device === c.dataset.v ? '' : c.dataset.v); saveDraft(); });
   $('#moreAddr').onclick = () => { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; $('[name=entrance]').focus(); };
 
   // Тип заявки. У новой: клиент уже был — «Повторная» ставится сама (можно переключить)
   let kind = kindOf(v);
-  let kindAuto = '';             // '' — выбрано руками или по умолчанию; 'phone' / 'flat' — поставлено само
-  let kindTouched = !!o || !!src; // сохранённую заявку и гарантию сами не переключаем
+  let kindAuto = v.kindAuto || '';             // '' — выбрано руками или по умолчанию; 'phone' / 'flat' — поставлено само
+  let kindTouched = !!o || !!src || !!v.kindTouched;
   const setKind = (k, auto) => {
     kind = k; kindAuto = auto || ''; if (!auto) kindTouched = true;
     $$('#kind .chip').forEach((x) => x.classList.toggle('on', x.dataset.v === k));
     $('#kindNote').textContent = kindAuto && k === 'repeat' ? '— клиент уже был, отмечено само' : '';
     if (k !== 'warranty') { warrantyOf = null; $('#wbanner').hidden = true; }
     else if (!warrantyOf) { $('#wbanner').textContent = 'Заявка по гарантии'; $('#wbanner').hidden = false; }
+    saveDraft();
   };
   $$('#kind .chip').forEach((c) => c.onclick = () => setKind(c.dataset.v));
+  if (kindAuto && kind === 'repeat') $('#kindNote').textContent = '— клиент уже был, отмечено само';
   const autoRepeat = (why) => { if (!kindTouched && kind === 'new') setKind('repeat', why); };
   const visited = (x) => x.status === 'closed' || x.status === 'refused';   // мастер у клиента был
 
@@ -406,9 +429,40 @@ async function renderOrderForm(id, warrantyFromId) {
 
   // Пересечения по времени
   const visitIn = $('[name=visitAt]');
+  const formValues = () => Object.fromEntries([...new FormData(form)].map(([k, val]) => [k, String(val).trim()]));
+  const initialFields = formValues();
+  const initialDevice = device;
+  const initialKind = kind;
+  const initialWarrantyOf = warrantyOf;
+  const discard = $('#discardDraft');
+  const writeDraft = (draft) => {
+    try {
+      if (draft) localStorage.setItem(ORDER_DRAFT_KEY, JSON.stringify(draft));
+      else localStorage.removeItem(ORDER_DRAFT_KEY);
+    } catch (e) { /* форма работает и при заблокированном хранилище */ }
+  };
+  function saveDraft() {
+    if (!keepsDraft || !form.isConnected) return;
+    const data = formValues();
+    const hasDraft = Object.values(data).some(Boolean) || !!device || kind !== 'new';
+    discard.hidden = !hasDraft;
+    writeDraft(hasDraft ? { ...data, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null,
+      device, kindAuto, kindTouched, isRepeat: kind === 'repeat', isWarranty: kind === 'warranty', warrantyOf } : null);
+  }
+  if (discard) {
+    discard.onclick = () => {
+      if (saving || !confirm('Очистить черновик новой заявки?')) return;
+      writeDraft(null);
+      renderOrderForm();
+    };
+    form.addEventListener('input', saveDraft);
+    form.addEventListener('change', saveDraft);
+    saveDraft();
+  }
   const showConflicts = async () => {
     const ts = visitIn.value ? new Date(visitIn.value).getTime() : null;
     const list = await visitConflicts(ts, v.id);
+    if (!form.isConnected || ts !== (visitIn.value ? new Date(visitIn.value).getTime() : null)) return;
     $('#conflicts').innerHTML = list.length ? `<div class="client-hint ${list.some((x) => x.near) ? 'bad' : ''}">
       <b>На ${esc(new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }))} уже есть:</b>
       ${list.map((x) => `<div>${x.near ? '⚠ ' : ''}${new Date(x.o.visitAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} — ${esc(shortAddress(x.o) || x.o.name || '№' + x.o.num)}${x.o.device ? ' · ' + esc(x.o.device.toLowerCase()) : ''}${x.near ? ' <b>— близко по времени</b>' : ''}</div>`).join('')}
@@ -421,7 +475,9 @@ async function renderOrderForm(id, warrantyFromId) {
   // Клиент уже был / проблемный / на гарантии
   const phoneIn = $('[name=phone]'); const hint = $('#client');
   const showClient = async () => {
-    const c = await findClientByPhone(phoneIn.value, v.id);
+    const phone = phoneIn.value;
+    const c = await findClientByPhone(phone, v.id);
+    if (saving || !form.isConnected || phone !== phoneIn.value) return;
     if (c && c.visited) autoRepeat('phone');
     else if (kindAuto === 'phone') setKind('new', 'none');   // номер исправили — уже не тот клиент
     if (!c) { hint.innerHTML = ''; return; }
@@ -441,6 +497,7 @@ async function renderOrderForm(id, warrantyFromId) {
       for (const k of ['name', 'address', 'apt', 'entrance', 'floor']) if (l[k]) $('[name=' + k + ']').value = l[k];
       if (l.entrance || l.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
+      saveDraft();
     };
     // Гарантия — адрес, имя и техника из того самого ремонта, а не из последней заявки этого номера
     const asw = $('[data-a=asw]', hint); if (asw) asw.onclick = () => {
@@ -450,19 +507,22 @@ async function renderOrderForm(id, warrantyFromId) {
       if (w.entrance || w.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
       if (w.device && device !== w.device) $$('#dev .chip').find((x) => x.dataset.v === w.device)?.click();
       asw.remove();
+      saveDraft();
     };
   };
   phoneIn.addEventListener('input', showClient);
-  if (src) showClient();
+  if (src || (keepsDraft && phoneIn.value)) showClient();
 
   // Выбрали квартиру, где уже были: адрес подставлен, ниже — кто там был; вбить как новую или как гарантию
   const setAddrMore = () => { if ($('[name=entrance]').value || $('[name=floor]').value) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; } };
   async function pickFlat(po) {
     const same = (await dbAll('orders')).filter((x) => x.id !== v.id && _norm(x.address) === _norm(po.address) && _norm(x.apt) === _norm(po.apt))
       .sort((a, b) => b.createdAt - a.createdAt);
+    if (!form.isConnected) return;
     const l = same[0] || po;
     for (const k of ['apt', 'entrance', 'floor']) $('[name=' + k + ']').value = l[k] || '';
     setAddrMore();
+    saveDraft();
     const w = same.find(onWarranty);
     // Ремонты в этой квартире: сначала тот, что на гарантии, потом свежие
     const repairs = same.filter((x) => x.status === 'closed').sort((a, b) => (b === w) - (a === w));
@@ -491,7 +551,7 @@ async function renderOrderForm(id, warrantyFromId) {
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
       if (!$('[name=model]').value && l.model) $('[name=model]').value = l.model;
       if (same.some(visited)) autoRepeat('flat');
-      box.innerHTML = ''; showClient();
+      box.innerHTML = ''; saveDraft(); showClient();
     };
     const fw = $('[data-a=flatWar]', box); if (fw) fw.onclick = () => {
       if (!manyClients) return asWarranty(lastRepair);
@@ -507,83 +567,120 @@ async function renderOrderForm(id, warrantyFromId) {
         ? ' (гарантия до ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') + ')'
         : warEndOf(base) ? ' — гарантия кончилась ' + new Date(warEndOf(base)).toLocaleDateString('ru-RU') : ' — гарантию не ставили');
       $('#wbanner').hidden = false;
-      box.innerHTML = ''; showClient();
+      box.innerHTML = ''; saveDraft(); showClient();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     };
   }
   // Вставили или дописали — приводим к виду +7 (965) 932-45-76
-  const tidyPhone = () => { const f = fmtPhone(phoneIn.value); if (f !== phoneIn.value) { phoneIn.value = f; showClient(); } };
+  const tidyPhone = () => { const f = fmtPhone(phoneIn.value); if (f !== phoneIn.value) { phoneIn.value = f; saveDraft(); showClient(); } };
   phoneIn.addEventListener('paste', () => setTimeout(tidyPhone, 0));
   phoneIn.addEventListener('change', tidyPhone);
   $('#pastePh').onclick = async () => {
     let t = '';
     try { t = await navigator.clipboard.readText(); } catch (e) { toast('Телефон не дал прочитать буфер — вставьте долгим нажатием', 4000); return; }
+    if (!form.isConnected) return;
     const m = String(t).match(PHONE_RE);
-    if (!m && digits(t).length < 5) { toast('В буфере нет номера'); return; }
+    if (!m && (!/^[+()\d\s-]+$/.test(t) || digits(t).length < 5 || digits(t).length > 11)) { toast('В буфере нет номера'); return; }
     phoneIn.value = fmtPhone(m ? m[0] : t.trim());
+    saveDraft();
     showClient();
   };
 
-  // Скопировали сообщение с заявкой — раскладываем по полям (разбор прямо в телефоне)
-  const fillFrom = (t) => {
-    const r = parseOrderText(t);
-    let n = 0;
-    for (const k of ['phone', 'name', 'address', 'apt', 'entrance', 'floor', 'model', 'problem']) if (r[k]) { $('[name=' + k + ']').value = r[k]; n++; }
-    if (r.entrance || r.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
-    if (r.device && device !== r.device) { $$('#dev .chip').find((x) => x.dataset.v === r.device)?.click(); n++; }
-    if (r.visitAt) { visitIn.value = toDTInput(r.visitAt); showConflicts(); n++; }
-    if (r.whenNote) { const nt = $('[name=notes]'); nt.value = [nt.value.trim(), r.whenNote].filter(Boolean).join('\n'); n++; }
-    if (r.phone) showClient();
-    return n;
-  };
+  const pasteLabels = { address: 'Улица, дом', apt: 'Квартира', problem: 'Что сломалось', visitAt: 'Когда ехать',
+    phone: 'Телефон', name: 'Имя', device: 'Техника', model: 'Марка / модель', entrance: 'Подъезд', floor: 'Этаж' };
   const po = $('#pasteOrder'); if (po) po.onclick = async () => {
-    let t = '';
-    try { t = await navigator.clipboard.readText(); } catch (e) { /* не дали — попросим вставить вручную */ }
-    if (t && t.trim().length >= 8 && fillFrom(t) >= 2) { toast('Заполнено из сообщения — проверьте поля', 4000); return; }
-    const res = await formDialog('Заявка из сообщения', `<p class="note" style="margin-top:0">Вставьте текст сообщения: долгое нажатие → «Вставить».</p>
-      <textarea class="input" name="t" rows="7">${esc(t || '')}</textarea>`, (d) => $('[name=t]', d).focus());
-    if (!res || !res.t) return;
-    toast(fillFrom(res.t) ? 'Заполнено из сообщения — проверьте поля' : 'Не получилось разобрать — заполните вручную', 4000);
+    po.disabled = true;
+    try {
+      let t = '';
+      try { t = await navigator.clipboard.readText(); } catch (e) { /* попросим вставить вручную */ }
+      if (!form.isConnected || saving) return;
+      let parsed = parseOrderText(t);
+      if (t.trim().length < 8 || Object.values(parsed).filter(Boolean).length < 2) {
+        const res = await formDialog('Заявка из сообщения', `<p class="note" style="margin-top:0">Вставьте текст сообщения: долгое нажатие → «Вставить».</p>
+          <textarea class="input" name="t" rows="7" aria-label="Текст сообщения">${esc(t)}</textarea>`, (d) => $('[name=t]', d).focus());
+        if (!res?.t || !form.isConnected) return;
+        parsed = parseOrderText(res.t);
+      }
+      const entries = Object.keys(pasteLabels).filter((k) => parsed[k]).map((k) =>
+        [k, k === 'visitAt' ? toDTInput(parsed[k]) : k === 'phone' ? fmtPhone(parsed[k]) : parsed[k]]);
+      if (!entries.length && !parsed.whenNote) { toast('Не получилось разобрать — заполните вручную', 4000); return; }
+      const current = { ...formValues(), device, phone: fmtPhone(phoneIn.value) };
+      const conflicts = entries.filter(([k, value]) => current[k] && current[k] !== value);
+      if (conflicts.length) {
+        const display = (k, value) => esc(k === 'visitAt' ? fmtDate(new Date(value).getTime()) : value);
+        const ok = await formDialog('Заменить заполненные поля?', `<ul class="paste-conflicts">${conflicts.map(([k, value]) =>
+          `<li><b>${pasteLabels[k]}</b><div>Было: ${display(k, current[k])}</div><div>Станет: ${display(k, value)}</div></li>`).join('')}</ul>`, null, 'Заменить');
+        if (!ok) return;
+      }
+      if (!form.isConnected || saving) return;
+      for (const [k, value] of entries) {
+        if (k === 'device') setDevice(value);
+        else form.elements.namedItem(k).value = value;
+      }
+      const notes = form.elements.notes;
+      if (parsed.whenNote && !notes.value.split('\n').includes(parsed.whenNote)) {
+        notes.value = [notes.value.trim(), parsed.whenNote].filter(Boolean).join('\n');
+      }
+      if (parsed.address || parsed.apt) $('#addrHint').innerHTML = '';
+      setAddrMore();
+      saveDraft();
+      if (parsed.phone) showClient();
+      if (parsed.visitAt) showConflicts();
+      toast('Заполнено из сообщения — проверьте поля', 4000);
+    } finally {
+      po.disabled = false;
+    }
   };
 
-  if (!o && !src) phoneIn.focus();
   // Пока заявка записывается, обе кнопки («Создать» в шапке и внизу) не работают — второе нажатие не создаст вторую заявку
-  let saving = false;
-  const lockSave = (on) => { saving = on; $('#topSave').disabled = on; const b = $('#f [type=submit]'); if (b) b.disabled = on; };
-  $('#f').onsubmit = async (e) => {
+  const lockSave = (on) => {
+    saving = on;
+    if (form.isConnected) ts.disabled = on;
+    $('[type=submit]', form).disabled = on;
+  };
+  form.onsubmit = async (e) => {
     e.preventDefault();
     if (saving) return;
-    const fd = new FormData(e.target);
-    const data = Object.fromEntries([...fd.entries()].map(([k, val]) => [k, String(val).trim()]));
-    data.phone = fmtPhone(data.phone);
-    if (!data.phone && !data.name && !data.address && !data.notes && !data.problem) { toast('Заполните хотя бы одно поле'); return; }
+    const data = formValues();
+    if (!Object.values(data).some(Boolean) && !device) { toast('Заполните хотя бы одно поле'); return; }
     lockSave(true);
     try { await saveForm(data); } catch (err) { toast('Не сохранилось: ' + err.message, 5000); lockSave(false); }
   };
   async function saveForm(data) {
     const now = Date.now();
-    const rec = o ? { ...o } : { id: uid(), createdAt: now, status: 'open', costs: [], income: 0 };
-    Object.assign(rec, data, { device, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null, updatedAt: now });
-    if (kind === 'warranty') { rec.isWarranty = true; if (warrantyOf) rec.warrantyOf = warrantyOf; }
-    else { delete rec.isWarranty; delete rec.warrantyOf; }
-    if (kind === 'repeat') rec.isRepeat = true; else delete rec.isRepeat;
-    rec.kindSet = true;   // тип выбран в форме — разметка старых заявок его не трогает
-    if (o && o.modelAuto && rec.model !== o.model) delete rec.modelAuto;   // поправили вручную — уже не «авто»
-    if (o && o.deviceAuto && rec.device !== o.device) delete rec.deviceAuto;
-    if (o) await dbPut('orders', rec); else await dbCreateOrder(rec);   // новой — номер и запись одной операцией
+    const fields = o ? Object.fromEntries(Object.entries(data).filter(([k, val]) => val !== initialFields[k])) : data;
+    if ('visitAt' in fields) fields.visitAt = fields.visitAt ? new Date(fields.visitAt).getTime() : null;
+    if ('phone' in fields) fields.phone = fmtPhone(fields.phone);
+    if (!o || device !== initialDevice) fields.device = device;
+    const apply = (rec) => {
+      if ('model' in fields && rec.model !== fields.model) delete rec.modelAuto;
+      if ('device' in fields && rec.device !== fields.device) delete rec.deviceAuto;
+      Object.assign(rec, fields, { updatedAt: now, kindSet: true });
+      if (!o || kind !== initialKind || warrantyOf !== initialWarrantyOf) {
+        if (kind === 'warranty') rec.isWarranty = true; else delete rec.isWarranty;
+        if (kind === 'warranty' && warrantyOf) rec.warrantyOf = warrantyOf; else delete rec.warrantyOf;
+        if (kind === 'repeat') rec.isRepeat = true; else delete rec.isRepeat;
+      }
+      return rec;
+    };
+    const serializedDraft = keepsDraft ? JSON.stringify(readOrderDraft()) : null;
+    const rec = o ? await dbUpdateOrder(o.id, apply)
+      : await dbCreateOrder(apply({ id: uid(), createdAt: now, status: 'open', costs: [], income: 0 }));
+    if (!rec) throw new Error('Заявка больше не существует');
+    if (keepsDraft && JSON.stringify(readOrderDraft()) === serializedDraft) writeDraft(null);
     toast(o ? 'Сохранено' : 'Заявка №' + rec.num + ' создана');
     changed();
-    go('#/order/' + rec.id, true);
+    if (form.isConnected) go('#/order/' + rec.id, true);
   }
 }
 
 // Небольшое окно с полями (для «Забрал на СД» и отметки клиента)
-function formDialog(title, html, onOpen) {
+function formDialog(title, html, onOpen, submitLabel = 'Готово') {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     d.className = 'pw';
     d.innerHTML = `<form><h3>${esc(title)}</h3>${html}
-      <div class="btns"><button type="button" class="btn sec" data-a="no">Отмена</button><button class="btn">Готово</button></div></form>`;
+      <div class="btns"><button type="button" class="btn sec" data-a="no">Отмена</button><button class="btn">${esc(submitLabel)}</button></div></form>`;
     document.body.appendChild(d);
     const f = $('form', d);
     const done = (val) => { d.close(); d.remove(); resolve(val); };
@@ -910,14 +1007,18 @@ async function openViewer(photoId, o, box) {
       reset();
       const fresh = await dbGet('orders', o.id); if (!fresh) return;
       const res = await plateDialog(r, fresh.model || '', fresh.device);
-      const setDev = res && res.dev === 'on' && r.device && !fresh.device;
-      if (!res || (!res.model && !setDev)) return;
-      if (res.model) { fresh.model = res.model; delete fresh.modelAuto; }
-      if (setDev) { fresh.device = r.device; delete fresh.deviceAuto; }
-      fresh.updatedAt = Date.now();
-      await dbPut('orders', fresh);
-      Object.assign(o, { model: fresh.model, device: fresh.device });
-      toast([setDev ? fresh.device : '', res.model ? 'модель ' + res.model : ''].filter(Boolean).join(', ').replace(/^./, (c) => c.toUpperCase()) + ' — записано'); changed();
+      if (!res) return;
+      const saved = [];
+      const current = await dbUpdateOrder(o.id, (rec) => {
+        if (res.model) { rec.model = res.model; delete rec.modelAuto; saved.push('модель ' + res.model); }
+        if (res.dev === 'on' && r.device && !rec.device) { rec.device = r.device; delete rec.deviceAuto; saved.push(r.device); }
+        if (!saved.length) return null;
+        rec.updatedAt = Date.now();
+        return rec;
+      });
+      if (!current || !saved.length) return;
+      Object.assign(o, { model: current.model, device: current.device });
+      toast(saved.join(', ').replace(/^./, (c) => c.toUpperCase()) + ' — записано'); changed();
       close();
       if (location.hash.startsWith('#/order/')) route();
     } catch (err) { console.error(err); toast(err.message || 'Не получилось прочитать', 4000); reset(); }
@@ -1086,8 +1187,13 @@ async function renderExpenseForm(id) {
   $('#mNext').onclick = () => { month = shiftMonth(month, 1); sync(); };
   sync();
   if (!e0) $('[name=amount]').focus();
-  $('#f').onsubmit = async (ev) => {
+  const form = $('#f');
+  const save = $('[type=submit]', form);
+  const del = $('#del');
+  const lock = (on) => { save.disabled = on; if (del) del.disabled = on; };
+  form.onsubmit = async (ev) => {
     ev.preventDefault();
+    if (save.disabled) return;
     const amount = parseMoney($('[name=amount]').value);
     if (!amount) { toast('Введите сумму'); return; }
     const monthly = EXP_MONTHLY.includes(cat);
@@ -1096,13 +1202,21 @@ async function renderExpenseForm(id) {
     const [y, m] = month.split('-').map(Number);
     const date = monthly ? new Date(y, m - 1, 1, 12).getTime() : fromDateInput($('[name=date]').value, e0?.date);
     const rec = { ...(e0 || { id: uid(), createdAt: Date.now() }), category: cat, amount, comment, date, monthly: monthly || undefined, updatedAt: Date.now() };
-    await dbPut('expenses', rec);
-    state.month = monthKey(date); // показать отчёт за тот месяц, куда записали
-    toast('Расход сохранён'); changed(); go('#/report', true);
+    lock(true);
+    try {
+      await dbPut('expenses', rec);
+      state.month = monthKey(date); // показать отчёт за тот месяц, куда записали
+      toast('Расход сохранён'); changed();
+      if (form.isConnected) go('#/report', true);
+    } catch (err) { toast('Расход не сохранился: ' + err.message, 5000); lock(false); }
   };
-  const d = $('#del'); if (d) d.onclick = async () => {
+  if (del) del.onclick = async () => {
     if (!confirm('Удалить расход?')) return;
-    await dbDel('expenses', e0.id); changed(); go('#/report', true);
+    lock(true);
+    try {
+      await dbDel('expenses', e0.id); changed();
+      if (form.isConnected) go('#/report', true);
+    } catch (err) { toast('Расход не удалён: ' + err.message, 5000); lock(false); }
   };
 }
 
@@ -1344,8 +1458,9 @@ async function renderSettings() {
     </div>
     ${s.pendingPhotos ? diskProgressHtml(s.uploadedPhotos, s.uploadedPhotos + s.pendingPhotos) : ''}
     ${s.paused ? `<div class="client-hint bad" style="margin-top:10px"><b>⏸ Отправка на паузе.</b>
-      ${s.paused === 'both' ? 'Данные в телефоне и на Диске различаются — выберите, какую копию оставить.' : 'Не удалось проверить копию на Диске (нет связи или другой пароль).'}
-      <br><button type="button" class="link" id="checkCopy">Проверить копию на Диске</button></div>` : ''}
+      ${s.paused === 'both' ? 'Данные в телефоне и на Диске различаются — выберите, какую копию оставить.'
+        : comparingDisk ? 'Сравниваю копии телефона и Диска.' : 'Не удалось проверить копию на Диске (нет связи или другой пароль).'}
+      <br><button type="button" class="link" id="checkCopy" ${comparingDisk ? 'disabled' : ''}>Проверить копию на Диске</button></div>` : ''}
     ${s.error ? `<p class="small neg">${esc(s.error)}</p>` : ''}
     ${!s.hasKey ? '<p class="small neg">Задайте пароль выше — без него на Диск ничего не отправляется.</p>' : ''}
     ${s.waiting && !s.error && !sendingAll ? `<p class="small muted">${WAIT_WHY[s.waitWhy] || WAIT_WHY.net}</p>` : ''}
@@ -1551,21 +1666,23 @@ async function renderSettings() {
     }
     toast('Яндекс Диск подключён');
     await onDiskConnected(token);
-    updateSyncBadge(); renderSettings(); requestSync();
   };
   const sn = $('#syncNow'); if (sn) sn.onclick = () => sendAll();
-  const cc = $('#checkCopy'); if (cc) cc.onclick = async () => { cc.disabled = true; cc.textContent = 'Проверяю…'; await checkDiskCopy(); renderSettings(); };
+  const cc = $('#checkCopy'); if (cc) cc.onclick = async () => { cc.disabled = true; cc.textContent = 'Проверяю…'; await checkDiskCopy(); };
   const fd = $('#fromDisk'); if (fd) fd.onclick = async () => {
+    if (comparingDisk) return;
     if (!confirm('Заменить данные в телефоне копией с Диска? Несохранённые на Диск изменения пропадут.')) return;
     try {
+      await beginDiskCheck();
       const d = await downloadDiskDump(askCopyPassword);
-      if (!d) { toast('На Диске ещё нет копии'); return; }
+      if (!d) { await setMeta('syncPaused', null); toast('На Диске ещё нет копии'); return; }
       const local = await buildDump();
       if (local.orders.length + local.expenses.length) await saveHistoryCopy('phone', local);
       await restoreDump(d, true);
-      await setMeta('diskLayout', 2); await setMeta('syncPaused', null);
+      await setMetaEntries({ diskLayout: 2, syncPaused: null });
       toast('Восстановлено с Диска'); go('#/orders');
     } catch (e) { toast(e.message); }
+    finally { updateSyncBadge(); if (location.hash.startsWith('#/settings')) renderSettings(); }
   };
   const dc = $('#disconnect'); if (dc) dc.onclick = async () => {
     if (!confirm('Отключить Яндекс Диск? Данные в телефоне останутся.')) return;
@@ -1710,42 +1827,52 @@ async function handleOAuthReturn() {
 }
 
 async function onDiskConnected(token) {
-  await setMeta('ydToken', token);
-  await setMeta('syncError', null);
-  await checkDiskCopy();
+  await checkDiskCopy(token);
 }
 
-// Копия на Диске — это более старое состояние этого же телефона? (все её заявки и расходы есть здесь, не новее)
+// Можно продолжать, если в телефоне есть все данные и фото из копии, в той же или более новой версии.
 function _isOlderCopyOfThis(disk, local) {
   const has = (list, other) => { const m = new Map(other.map((x) => [x.id, x])); return list.every((x) => m.has(x.id) && (m.get(x.id).updatedAt || 0) >= (x.updatedAt || 0)); };
-  return has(disk.orders, local.orders) && has(disk.expenses || [], local.expenses);
+  if (!has(disk.orders, local.orders) || !has(disk.expenses || [], local.expenses)) return false;
+  const orderIds = new Set(disk.orders.map((o) => o.id));
+  const photos = new Map(local.photos.map((p) => [p.id, p]));
+  return (disk.photos || []).every((p) => {
+    if (!orderIds.has(p.orderId)) return true;
+    const current = photos.get(p.id);
+    return current?.orderId === p.orderId && (!p.remotePath || p.remotePath === current.remotePath);
+  });
 }
 const _lastEdit = (d) => Math.max(0, ...d.orders.map((o) => o.updatedAt || o.createdAt || 0), ...(d.expenses || []).map((e) => e.updatedAt || e.createdAt || 0));
 const _copyLine = (d, when) => `заявок <b>${d.orders.length}</b>, расходов ${(d.expenses || []).length}${when ? ', ' + esc(when) : ''}`;
 
 // Проверить копию на Диске перед тем, как что-то туда отправлять. Сомнение — отправка на паузе.
-async function checkDiskCopy() {
-  const local = await buildDump();
-  const hasLocal = local.orders.length + local.expenses.length > 0;
-  let d;
-  try { d = await downloadDiskDump(askCopyPassword); } catch (e) {
-    await setMeta('syncPaused', 'check');
-    toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Настройки» → «Проверить копию на Диске».', 7000);
-    updateSyncBadge(); return;
-  }
-  const diskHas = d && d.orders.length + (d.expenses || []).length > 0;
-  if (!diskHas) { await setMeta('syncPaused', null); if (hasLocal) await markDirty(); updateSyncBadge(); requestSync(); return; }
-  if (!hasLocal) {
-    await setMeta('syncPaused', null);
-    if (confirm('На Диске есть копия: заявок ' + d.orders.length + '. Загрузить её в телефон?')) {
-      await restoreDump(d, true); await setMeta('diskLayout', 2); toast('Восстановлено с Диска');
+let comparingDisk = false;
+async function checkDiskCopy(token) {
+  if (comparingDisk) return;
+  comparingDisk = true;
+  try {
+    await beginDiskCheck(token);
+    updateSyncBadge();
+    const d = await downloadDiskDump(askCopyPassword);
+    const local = await buildDump();
+    const hasLocal = local.orders.length + local.expenses.length > 0;
+    const diskHas = d && d.orders.length + (d.expenses || []).length > 0;
+    if (!d || (!diskHas && !hasLocal) || (diskHas && _isOlderCopyOfThis(d, local))) {
+      if (hasLocal) await markDirty();
+      await setMeta('syncPaused', null);
+      requestSync();
+      return;
     }
-    updateSyncBadge(); return;
+    await setMeta('syncPaused', 'both');
+    updateSyncBadge();
+    await diskChoiceDialog(d, local);
+  } catch (e) {
+    toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Настройки» → «Проверить копию на Диске».', 7000);
+  } finally {
+    comparingDisk = false;
+    updateSyncBadge();
+    if (location.hash.startsWith('#/settings')) renderSettings();
   }
-  if (_isOlderCopyOfThis(d, local)) { await setMeta('syncPaused', null); await markDirty(); updateSyncBadge(); requestSync(); return; }
-  await setMeta('syncPaused', 'both');
-  updateSyncBadge();
-  await diskChoiceDialog(d, local);
 }
 
 // В телефоне и на Диске разные данные. Ничего не затираем молча: показываем обе копии, выбираете вы.
@@ -1774,24 +1901,21 @@ async function diskChoiceDialog(disk, local) {
   try {
     if (choice === 'disk') {
       toast('Сохраняю копию телефона…');
-      await saveHistoryCopy('phone', local);
+      const current = await buildDump();
+      if (current.orders.length + current.expenses.length) await saveHistoryCopy('phone', current);
       await restoreDump(disk, true);
-      await setMeta('diskLayout', 2);
-      await setMeta('syncPaused', null);
-      toast('Загружено с Диска. Прежние данные телефона — в «Истории» на Диске.', 5000);
-      route();
+      await setMetaEntries({ diskLayout: 2, syncPaused: null });
+      toast('Загружено с Диска', 5000);
     } else if (choice === 'phone') {
-      if (!confirm('Заменить копию на Диске данными телефона? Прежняя копия Диска сохранится в «Истории».')) { diskChoiceDialog(disk, local); return; }
+      if (!confirm('Заменить копию на Диске данными телефона? Прежняя копия Диска сохранится в «Истории».')) return await diskChoiceDialog(disk, local);
       toast('Сохраняю копию Диска…');
       await saveHistoryCopy('disk');
-      await setMeta('syncPaused', null);
       await markDirty();
+      await setMeta('syncPaused', null);
       toast('Отправляю данные телефона на Диск', 4000);
       requestSync();
     }
   } catch (e) { toast('Не получилось: ' + e.message + '. Ничего не изменено.', 6000); }
-  updateSyncBadge();
-  if (location.hash.startsWith('#/settings')) renderSettings();
 }
 
 // ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
