@@ -227,3 +227,85 @@ async function findClientByPhone(phone, exceptId) {
     warranty: orders.find((o) => o.status === 'closed' && o.warrantyDays && o.closedAt + o.warrantyDays * 864e5 >= now) || null,
   };
 }
+
+// ---------- Подъезд и этаж по номеру квартиры ----------
+// Два источника, оба работают без интернета:
+// 1) карта OpenStreetMap (entrances.json): у части домов Уфы на подъездах подписаны квартиры, у многих — этажность;
+// 2) свои прошлые заявки в этом доме, где записаны квартира, подъезд и этаж: по ним видно, сколько квартир на этаже и этажей.
+// Это подсказка: подставляется только по кнопке. Первый этаж бывает нежилым, нумерация — сбитой.
+let _entrances = null, _entrLoading = null;
+function loadEntrances() {
+  if (_entrances) return Promise.resolve(_entrances);
+  if (!_entrLoading) {
+    _entrLoading = fetch('entrances.json').then((r) => (r.ok ? r.json() : { h: {} }))
+      .then((d) => (_entrances = (d && d.h) || {})).catch(() => { _entrLoading = null; return {}; });
+  }
+  return _entrLoading;
+}
+
+// «ул. Менделеева, 130» → «менделеева|130». Сёла района («Михайловка, ул. …») — null: в карте подъездов только Уфа.
+function _entrHouseKey(address) {
+  const v = String(address || '').trim();
+  const i = v.lastIndexOf(',');
+  if (i < 0) return null;
+  const street = v.slice(0, i); const house = v.slice(i + 1);
+  if (street.includes(',')) return null;
+  // тип улицы в начале («пр-т», «б-р», «кв-л» и т. п.) убираем целиком — дефис иначе рвёт его на два слова
+  const bare = street.trim().replace(/^(ул|улица|пр-т|просп|проспект|пер|переулок|б-р|бульвар|пр-д|проезд|ш|шоссе|туп|тупик|пл|площадь|наб|набережная|мкр|микрорайон|кв-л|квартал|тракт|аллея|линия|тер|спуск|въезд)\.?(?=\s)/i, '');
+  const s = _norm(bare).split(' ').filter((t) => t && !_TYPE_WORDS.has(t)).join(' ');
+  const h = house.toLowerCase().replace(/^\s*(д|дом)\.?\s*/, '').replace(/корпус|корп/g, 'к').replace(/\s+/g, '');
+  return s && h ? s + '|' + h : null;
+}
+
+const _entrInt = (x) => (/^\s*\d+\s*$/.test(String(x ?? '')) ? parseInt(x, 10) : 0);
+// Одно значение, если все варианты сходятся; иначе 0
+const _entrSame = (arr) => (arr.length && arr.every((x) => x === arr[0]) ? arr[0] : 0);
+
+// { entrance, floor, src } — только то, в чём сходятся все подходящие варианты; null — подсказать нечего
+async function guessEntrance(address, apt, history) {
+  const n = _entrInt(apt);
+  if (!n || !address) return null;
+  const addrKey = _norm(address);
+  const samples = (history || []).filter((o) => o.address && _norm(o.address) === addrKey && _entrInt(o.apt) && _entrInt(o.entrance))
+    .map((o) => ({ apt: _entrInt(o.apt), ent: _entrInt(o.entrance), floor: _entrInt(o.floor) }));
+  const same = samples.find((s) => s.apt === n);
+  if (same) return { entrance: same.ent, floor: same.floor, src: 'вы уже были в этой квартире' };
+
+  // 1) Карта: подъезд — из подписанных квартир, этаж — по числу квартир в подъезде и этажности
+  const key = _entrHouseKey(address);
+  const house = key ? (await loadEntrances())[key] : null;
+  const e = house && house[1].find(([, a, b]) => n >= a && n <= b);
+  if (e) {
+    const [ref, a, b] = e; const levels = house[0]; const cnt = b - a + 1;
+    const own = samples.filter((s) => s.ent === ref && s.floor);
+    const floors = [];
+    // Нежилой первый этаж (off = 1) — только если квартиры не делятся на все этажи поровну: 20 квартир на 5 этажах — по 4 с первого
+    const offs = !own.length && levels && cnt % levels === 0 ? [0] : [0, 1];
+    for (let k = 1; k <= 16; k++) {
+      for (const off of offs) {   // off = 1: первый этаж нежилой
+        // этажность с карты задаёт «квартир на этаже», свои записи в этом подъезде выбирают из вариантов
+        const fits = (!levels || cnt === k * (levels - off)) && (own.length ? own.every((s) => Math.floor((s.apt - a) / k) + 1 + off === s.floor) : !!levels);
+        const f = Math.floor((n - a) / k) + 1 + off;
+        if (fits && (!levels || f <= levels)) floors.push(f);
+      }
+    }
+    return { entrance: ref, floor: _entrSame(floors), src: own.length ? 'по карте и вашим заявкам' : 'по карте' };
+  }
+
+  // 2) Свои заявки: подбираем «квартир на этаже» и «этажей», которые сходятся со всеми записями в этом доме
+  const withFloor = samples.filter((s) => s.floor);
+  if (!withFloor.length) return null;
+  const ents = []; const floors = [];
+  for (let k = 1; k <= 16; k++) {
+    for (let L = 2; L <= 30; L++) {
+      const per = k * L;
+      const fits = samples.every((s) => Math.floor((s.apt - 1) / per) + 1 === s.ent &&
+        (!s.floor || Math.floor(((s.apt - 1) % per) / k) + 1 === s.floor));
+      if (!fits) continue;
+      ents.push(Math.floor((n - 1) / per) + 1);
+      floors.push(Math.floor(((n - 1) % per) / k) + 1);
+    }
+  }
+  const ent = _entrSame(ents); const floor = _entrSame(floors);
+  return ent || floor ? { entrance: ent, floor, src: 'по вашим заявкам в этом доме' } : null;
+}

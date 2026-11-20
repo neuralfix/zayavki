@@ -51,7 +51,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.39'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.40'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -376,6 +376,7 @@ async function renderOrderForm(id, warrantyFromId) {
       </div>
       <div class="field"><label>Марка / модель</label><input class="input" name="model" value="${esc(v.model)}"></div>`;
   const addressDetails = `
+      <div id="entHint"></div>
       <button type="button" class="link small" id="moreAddr" ${v.entrance || v.floor ? 'hidden' : ''}>+ подъезд, этаж</button>
       <div class="addr-row two" id="addrMore" ${v.entrance || v.floor ? '' : 'hidden'}>
         <div class="field"><label>Подъезд</label><input class="input" name="entrance" value="${esc(v.entrance)}" inputmode="numeric"></div>
@@ -407,6 +408,28 @@ async function renderOrderForm(id, warrantyFromId) {
   };
   $$('#dev .chip').forEach((c) => c.onclick = () => { setDevice(device === c.dataset.v ? '' : c.dataset.v); saveDraft(); });
   $('#moreAddr').onclick = () => { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; $('[name=entrance]').focus(); };
+
+  // Подсказка подъезда и этажа по квартире: «≈ подъезд 2, этаж 5 · по карте — Подставить»
+  let entTimer = null, entSeq = 0;
+  const showEntHint = () => { clearTimeout(entTimer); entTimer = setTimeout(async () => {
+    const my = ++entSeq; const box = $('#entHint'); if (!box) return;
+    const eIn = $('[name=entrance]'); const fIn = $('[name=floor]');
+    const hist = (await dbAll('orders')).filter((x) => x.id !== v.id);
+    const g = await guessEntrance($('[name=address]').value.trim(), $('[name=apt]').value.trim(), hist).catch(() => null);
+    if (my !== entSeq) return;
+    const ent = g && g.entrance ? String(g.entrance) : ''; const fl = g && g.floor ? String(g.floor) : '';
+    // нечего подсказать или уже вписано то же самое
+    if (!g || ((!ent || eIn.value.trim() === ent) && (!fl || fIn.value.trim() === fl))) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="ent-hint"><span>≈ ${[ent ? 'подъезд ' + esc(ent) : '', fl ? 'этаж ' + esc(fl) : ''].filter(Boolean).join(', ')}
+      <small>${esc(g.src)}</small></span><button type="button" class="btn sec mini" data-a="entFill">Подставить</button></div>`;
+    $('[data-a=entFill]', box).onclick = () => {
+      if (ent) eIn.value = ent; if (fl) fIn.value = fl;
+      $('#addrMore').hidden = false; $('#moreAddr').hidden = true; box.innerHTML = '';
+      form.dispatchEvent(new Event('input', { bubbles: true }));   // черновик запомнит
+    };
+  }, 250); };
+  for (const n of ['address', 'apt', 'entrance', 'floor']) $('[name=' + n + ']').addEventListener('input', showEntHint);
+  showEntHint();
 
   // Тип заявки. У новой: клиент уже был — «Повторная» ставится сама (можно переключить)
   let kind = kindOf(v);
