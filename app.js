@@ -5,7 +5,12 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const view = $('#view');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (n) => new Intl.NumberFormat('ru-RU').format(Math.round(Number(n) || 0)) + ' ₽';
+const rubles = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+const rublesWithKopecks = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (n) => {
+  const amount = Number(n) || 0;
+  return (Number.isInteger(amount) ? rubles : rublesWithKopecks).format(amount) + ' ₽';
+};
 const parseMoney = (s) => { const v = parseFloat(String(s ?? '').replace(/[\s ₽]/g, '').replace(',', '.')); return isFinite(v) ? v : 0; };
 const digits = (s) => String(s ?? '').replace(/\D/g, '');
 
@@ -51,7 +56,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.40'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.41'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -409,26 +414,78 @@ async function renderOrderForm(id, warrantyFromId) {
   $$('#dev .chip').forEach((c) => c.onclick = () => { setDevice(device === c.dataset.v ? '' : c.dataset.v); saveDraft(); });
   $('#moreAddr').onclick = () => { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; $('[name=entrance]').focus(); };
 
-  // Подсказка подъезда и этажа по квартире: «≈ подъезд 2, этаж 5 · по карте — Подставить»
-  let entTimer = null, entSeq = 0;
-  const showEntHint = () => { clearTimeout(entTimer); entTimer = setTimeout(async () => {
-    const my = ++entSeq; const box = $('#entHint'); if (!box) return;
-    const eIn = $('[name=entrance]'); const fIn = $('[name=floor]');
-    const hist = (await dbAll('orders')).filter((x) => x.id !== v.id);
-    const g = await guessEntrance($('[name=address]').value.trim(), $('[name=apt]').value.trim(), hist).catch(() => null);
-    if (my !== entSeq) return;
-    const ent = g && g.entrance ? String(g.entrance) : ''; const fl = g && g.floor ? String(g.floor) : '';
-    // нечего подсказать или уже вписано то же самое
-    if (!g || ((!ent || eIn.value.trim() === ent) && (!fl || fIn.value.trim() === fl))) { box.innerHTML = ''; return; }
-    box.innerHTML = `<div class="ent-hint"><span>≈ ${[ent ? 'подъезд ' + esc(ent) : '', fl ? 'этаж ' + esc(fl) : ''].filter(Boolean).join(', ')}
-      <small>${esc(g.src)}</small></span><button type="button" class="btn sec mini" data-a="entFill">Подставить</button></div>`;
-    $('[data-a=entFill]', box).onclick = () => {
-      if (ent) eIn.value = ent; if (fl) fIn.value = fl;
-      $('#addrMore').hidden = false; $('#moreAddr').hidden = true; box.innerHTML = '';
-      form.dispatchEvent(new Event('input', { bubbles: true }));   // черновик запомнит
-    };
-  }, 250); };
-  for (const n of ['address', 'apt', 'entrance', 'floor']) $('[name=' + n + ']').addEventListener('input', showEntHint);
+  const { address: addressIn, apt: aptIn, entrance: entranceIn, floor: floorIn } = form.elements;
+  const addressHintBox = $('#addrHint', form);
+  const entranceHintBox = $('#entHint', form);
+  const sameHouse = (a, b) => {
+    const key = orderAddressKey(a);
+    return a.trim() === b.trim() || (!!key && key === orderAddressKey(b));
+  };
+  const aptKey = (value) => orderApartmentKey(value) || String(value || '').trim().toLowerCase();
+  let hintedFor = keepsDraft ? v.hintedFor || null : null;
+  let entTimer, entSeq = 0;
+  const showEntHint = () => {
+    const seq = ++entSeq;
+    clearTimeout(entTimer);
+    entranceHintBox.innerHTML = '';
+    const address = addressIn.value.trim();
+    const apt = aptIn.value.trim();
+    if (!address || !apt || (entranceIn.value.trim() && floorIn.value.trim())) return;
+    const isCurrent = () => form.isConnected && !saving && seq === entSeq &&
+      addressIn.value.trim() === address && aptIn.value.trim() === apt;
+    entTimer = setTimeout(async () => {
+      if (!isCurrent()) return;
+      let suggestion;
+      try {
+        const history = (await dbAll('orders')).filter((x) => x.id !== v.id);
+        if (!isCurrent()) return;
+        suggestion = await guessEntrance(address, apt, history);
+      } catch (err) { return; }
+      if (!suggestion || !isCurrent()) return;
+      const entrance = String(suggestion.entrance || '');
+      const floor = String(suggestion.floor || '');
+      const valuesToFill = () => {
+        const enteredEntrance = entranceIn.value.trim();
+        const enteredFloor = floorIn.value.trim();
+        if ((entrance && enteredEntrance && enteredEntrance !== entrance) ||
+            (floor && enteredFloor && enteredFloor !== floor)) return [];
+        return [[entranceIn, entrance], [floorIn, floor]].filter(([input, value]) => value && !input.value.trim());
+      };
+      const fills = valuesToFill();
+      if (!fills.length) return;
+      const label = fills.map(([input, value]) => (input === entranceIn ? 'подъезд ' : 'этаж ') + esc(value)).join(', ');
+      entranceHintBox.innerHTML = `<div class="ent-hint"><span>${suggestion.estimated ? '≈ ' : ''}${label}
+        <small>${esc(suggestion.src)}</small></span><button type="button" class="btn sec mini" data-a="entFill">Подставить</button></div>`;
+      $('[data-a=entFill]', entranceHintBox).onclick = () => {
+        if (!isCurrent()) return;
+        const now = valuesToFill();
+        if (!now.length) return;
+        hintedFor = { ...(hintedFor || {}), address, apt };
+        for (const [input, value] of now) {
+          input.value = value;
+          hintedFor[input.name] = value;
+        }
+        setAddrMore();
+        showEntHint();
+        saveDraft();
+      };
+    }, 250);
+  };
+  const onPlaceInput = () => {
+    if (hintedFor && (!sameHouse(addressIn.value, hintedFor.address) || aptKey(aptIn.value) !== aptKey(hintedFor.apt))) {
+      for (const input of [entranceIn, floorIn]) {
+        if (input.value === hintedFor[input.name]) input.value = '';
+      }
+      hintedFor = null;
+    }
+    addressHintBox.innerHTML = '';
+    showEntHint();
+  };
+  for (const input of [addressIn, aptIn]) input.addEventListener('input', onPlaceInput);
+  for (const input of [entranceIn, floorIn]) input.addEventListener('input', () => {
+    if (hintedFor) delete hintedFor[input.name];
+    showEntHint();
+  });
   showEntHint();
 
   // Тип заявки. У новой: клиент уже был — «Повторная» ставится сама (можно переключить)
@@ -472,7 +529,7 @@ async function renderOrderForm(id, warrantyFromId) {
     const hasDraft = Object.values(data).some(Boolean) || !!device || kind !== 'new';
     discard.hidden = !hasDraft;
     writeDraft(hasDraft ? { ...data, visitAt: data.visitAt ? new Date(data.visitAt).getTime() : null,
-      device, kindAuto, kindTouched, isRepeat: kind === 'repeat', isWarranty: kind === 'warranty', warrantyOf } : null);
+      device, kindAuto, kindTouched, isRepeat: kind === 'repeat', isWarranty: kind === 'warranty', warrantyOf, hintedFor } : null);
   }
   if (discard) {
     discard.onclick = () => {
@@ -519,8 +576,13 @@ async function renderOrderForm(id, warrantyFromId) {
         <span class="muted">· №${l.num}, ${esc(fmtDate(l.createdAt, false))}${l.device ? ', ' + esc(l.device.toLowerCase()) : ''}</span>
         <br><button type="button" class="link" data-a="fill">Подставить имя и адрес</button></div>`;
     $('[data-a=fill]', hint).onclick = () => {
-      for (const k of ['name', 'address', 'apt', 'entrance', 'floor']) if (l[k]) $('[name=' + k + ']').value = l[k];
-      if (l.entrance || l.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
+      if (l.name) form.elements.name.value = l.name;
+      if (l.address) {
+        for (const k of ['address', 'apt', 'entrance', 'floor']) form.elements.namedItem(k).value = l[k] || '';
+        hintedFor = null;
+        onPlaceInput();
+        setAddrMore();
+      }
       if (!device && l.device) $$('#dev .chip').find((x) => x.dataset.v === l.device)?.click();
       saveDraft();
     };
@@ -529,7 +591,9 @@ async function renderOrderForm(id, warrantyFromId) {
       warrantyOf = w.id; setKind('warranty');
       $('#wbanner').textContent = 'Заявка по гарантии к №' + w.num; $('#wbanner').hidden = false;
       for (const k of ['name', 'address', 'apt', 'entrance', 'floor', 'model']) $('[name=' + k + ']').value = w[k] || '';
-      if (w.entrance || w.floor) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; }
+      hintedFor = null;
+      onPlaceInput();
+      setAddrMore();
       if (w.device && device !== w.device) $$('#dev .chip').find((x) => x.dataset.v === w.device)?.click();
       asw.remove();
       saveDraft();
@@ -541,11 +605,21 @@ async function renderOrderForm(id, warrantyFromId) {
   // Выбрали квартиру, где уже были: адрес подставлен, ниже — кто там был; вбить как новую или как гарантию
   const setAddrMore = () => { if ($('[name=entrance]').value || $('[name=floor]').value) { $('#addrMore').hidden = false; $('#moreAddr').hidden = true; } };
   async function pickFlat(po) {
-    const same = (await dbAll('orders')).filter((x) => x.id !== v.id && _norm(x.address) === _norm(po.address) && _norm(x.apt) === _norm(po.apt))
+    const address = addressIn.value;
+    const previousApt = aptIn.value;
+    const selectedApt = aptKey(po.apt);
+    const same = (await dbAll('orders')).filter((x) => x.id !== v.id && sameHouse(String(x.address || ''), po.address) &&
+        aptKey(x.apt) === selectedApt)
       .sort((a, b) => b.createdAt - a.createdAt);
-    if (!form.isConnected) return;
-    const l = same[0] || po;
-    for (const k of ['apt', 'entrance', 'floor']) $('[name=' + k + ']').value = l[k] || '';
+    if (!form.isConnected || addressIn.value !== address || aptIn.value !== previousApt) return;
+    const l = po;
+    aptIn.value = l.apt || '';
+    for (const input of [entranceIn, floorIn]) {
+      const values = new Set([l, ...same].map((x) => String(x[input.name] || '').trim()).filter(Boolean));
+      input.value = values.size === 1 ? [...values][0] : '';
+    }
+    hintedFor = null;
+    onPlaceInput();
     setAddrMore();
     saveDraft();
     const w = same.find(onWarranty);
@@ -630,9 +704,15 @@ async function renderOrderForm(id, warrantyFromId) {
         [k, k === 'visitAt' ? toDTInput(parsed[k]) : k === 'phone' ? fmtPhone(parsed[k]) : parsed[k]]);
       if (!entries.length && !parsed.whenNote) { toast('Не получилось разобрать — заполните вручную', 4000); return; }
       const current = { ...formValues(), device, phone: fmtPhone(phoneIn.value) };
+      const changedHouse = parsed.address && current.address && !sameHouse(parsed.address, current.address);
+      const changedApt = parsed.apt && current.apt && aptKey(parsed.apt) !== aptKey(current.apt);
+      const locationFields = changedHouse ? ['apt', 'entrance', 'floor'] : changedApt ? ['entrance', 'floor'] : [];
+      for (const k of locationFields) {
+        if (current[k] && !parsed[k]) entries.push([k, '']);
+      }
       const conflicts = entries.filter(([k, value]) => current[k] && current[k] !== value);
       if (conflicts.length) {
-        const display = (k, value) => esc(k === 'visitAt' ? fmtDate(new Date(value).getTime()) : value);
+        const display = (k, value) => esc(k === 'visitAt' && value ? fmtDate(new Date(value).getTime()) : value || 'пусто');
         const ok = await formDialog('Заменить заполненные поля?', `<ul class="paste-conflicts">${conflicts.map(([k, value]) =>
           `<li><b>${pasteLabels[k]}</b><div>Было: ${display(k, current[k])}</div><div>Станет: ${display(k, value)}</div></li>`).join('')}</ul>`, null, 'Заменить');
         if (!ok) return;
@@ -641,12 +721,14 @@ async function renderOrderForm(id, warrantyFromId) {
       for (const [k, value] of entries) {
         if (k === 'device') setDevice(value);
         else form.elements.namedItem(k).value = value;
+        if (hintedFor && (k === 'entrance' || k === 'floor')) delete hintedFor[k];
       }
       const notes = form.elements.notes;
       if (parsed.whenNote && !notes.value.split('\n').includes(parsed.whenNote)) {
         notes.value = [notes.value.trim(), parsed.whenNote].filter(Boolean).join('\n');
       }
-      if (parsed.address || parsed.apt) $('#addrHint').innerHTML = '';
+      if (parsed.address || parsed.apt) onPlaceInput();
+      else if (parsed.entrance || parsed.floor) showEntHint();
       setAddrMore();
       saveDraft();
       if (parsed.phone) showClient();
@@ -849,8 +931,7 @@ async function renderOrder(id) {
   $('[data-a=del]').onclick = async () => {
     if (!confirm('Удалить заявку №' + o.num + ' вместе с фото? На Диске фото уйдут в корзину.')) return;
     for (const p of await dbByIndex('photos', 'orderId', o.id)) {
-      if (p.remotePath) await addPendingDelete(p.remotePath);
-      await dbDel('photos', p.id);
+      await dbRemovePhoto(p.id);
     }
     await dbDel('orders', o.id);
     toast('Заявка удалена'); changed(); go('#/orders', true);
@@ -858,7 +939,7 @@ async function renderOrder(id) {
 }
 
 // ---------- Фото ----------
-async function compressImage(file, max, q) {
+async function compressImage(file, max, q, rejectUnreadable = false) {
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
     const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
@@ -868,7 +949,10 @@ async function compressImage(file, max, q) {
     bmp.close && bmp.close();
     const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', q));
     return blob || file;
-  } catch (e) { return file; }
+  } catch (e) {
+    if (rejectUnreadable) throw e;
+    return file;
+  }
 }
 
 // Повернуть снимок на 90/180/270° по часовой
@@ -888,6 +972,7 @@ async function rotateImage(blob, deg) {
 
 async function photoWidget(o, box) {
   const photos = (await dbByIndex('photos', 'orderId', o.id)).sort((a, b) => a.createdAt - b.createdAt);
+  box.dataset.orderId = o.id;
   const tiles = photos.map((p) => {
     if (!p.blob) return `<button type="button" class="ph remote" data-remote="${p.id}">на Диске<br>открыть</button>`;
     const u = URL.createObjectURL(p.blob); photoUrls.push(u);
@@ -908,22 +993,32 @@ async function photoWidget(o, box) {
     if (!files.length) { if (picked) toast('Это не фото'); return; }
     toast('Сохраняю фото…');
     const ids = [];
-    for (const f of files) {
-      // крупнее и чётче, чтобы текст договора читался
-      const blob = await compressImage(f, 2000, 0.8);
-      const id = uid(); ids.push(id);
-      await dbPut('photos', { id, orderId: o.id, kind: 'extra', blob, createdAt: Date.now(), uploaded: 0 });
+    let error = '';
+    try {
+      for (const f of files) {
+        // Крупнее и чётче, чтобы текст договора читался. Расширения файла недостаточно.
+        const blob = await compressImage(f, 2000, 0.8, true).catch(() => null);
+        if (!blob) continue;
+        const id = uid();
+        await dbPut('photos', { id, orderId: o.id, kind: 'extra', blob, blobRevision: id, createdAt: Date.now(), uploaded: 0 });
+        ids.push(id);
+      }
+    } catch (e) { error = e.message; }
+    const message = ids.length ? 'Фото сохранено: ' + ids.length : 'Не удалось добавить фото';
+    toast(message + (error ? ' · ' + error : picked > ids.length ? ' · пропущено файлов: ' + (picked - ids.length) : ''), 4000);
+    if (ids.length) {
+      changed();
+      if (box.isConnected) await photoWidget(o, box);
+      autoPlateAfterAdd(o.id, ids);
     }
-    toast('Фото сохранено: ' + files.length);
-    await photoWidget(o, box);
-    changed();
-    autoPlateAfterAdd(o.id, ids);
   });
-  $$('.ph[data-id]', box).forEach((b) => b.onclick = () => openViewer(b.dataset.id, o, box));
+  $$('.ph[data-id]', box).forEach((b) => b.onclick = () =>
+    openViewer(b.dataset.id, o, box).catch((e) => toast('Не удалось открыть фото: ' + e.message, 4000)));
   $$('.ph[data-remote]', box).forEach((b) => b.onclick = async () => {
     b.disabled = true; b.textContent = 'Загружаю…';
-    try { await fetchPhoto(b.dataset.remote); await photoWidget(o, box); } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = 'на Диске<br>открыть'; }
+    try { await fetchPhoto(b.dataset.remote, askCopyPassword); await photoWidget(o, box); } catch (e) { toast(e.message); b.disabled = false; b.innerHTML = 'на Диске<br>открыть'; }
   });
+  restorePhotoViewer(box);
 }
 
 // Добавили фото, а модели или вида техники нет — ищем шильдик сами, в фоне. Записанное видно сразу.
@@ -937,120 +1032,229 @@ function autoPlateAfterAdd(orderId, ids) {
   }).catch((e) => toast('Шильдик не прочитан: ' + e.message, 5000));
 }
 
-// Просмотр фото заявки: листается пальцем, как галерея телефона — лента с плавной доводкой до соседнего фото;
-// стрелки и ‹ › тоже листают; счётчик «3 / 7». Жест «Назад» закрывает просмотр, а не уходит из заявки.
-async function openViewer(photoId, o, box) {
-  const list = (await dbByIndex('photos', 'orderId', o.id)).filter((x) => x.blob).sort((a, b) => a.createdAt - b.createdAt);
-  if (!list.length) return;
+// Просмотр фото занимает отдельный шаг истории. «Вперёд» восстанавливает тот же снимок.
+let activePhotoViewer = null;
+let openingPhotoViewer = false;
+let closingPhotoViewer = Promise.resolve();
+
+function restorePhotoViewer(box = $('#photos')) {
+  const entry = history.state?.viewer;
+  if (entry?.orderId && box?.dataset.orderId === entry.orderId && location.hash === '#/order/' + entry.orderId) {
+    openViewer(entry.photoId, { id: entry.orderId }, box, true).catch((e) => toast('Не удалось открыть фото: ' + e.message, 4000));
+  }
+}
+window.addEventListener('popstate', () => {
+  if (activePhotoViewer) activePhotoViewer.finish();
+  restorePhotoViewer();
+});
+window.addEventListener('hashchange', () => {
+  if (activePhotoViewer && location.hash !== '#/order/' + activePhotoViewer.orderId) activePhotoViewer.finish();
+  restorePhotoViewer();
+});
+
+async function openViewer(photoId, o, box, fromHistory = false) {
+  if (activePhotoViewer || openingPhotoViewer) return;
+  const orderHash = '#/order/' + o.id;
+  openingPhotoViewer = true;
+  let list;
+  try {
+    await closingPhotoViewer;
+    list = (await dbByIndex('photos', 'orderId', o.id)).filter((x) => x.blob).sort((a, b) => a.createdAt - b.createdAt);
+    if (location.hash !== orderHash || !box.isConnected || (fromHistory && history.state?.viewer?.orderId !== o.id)) return;
+    if (!list.length) {
+      if (fromHistory) {
+        const { viewer, ...state } = history.state;
+        history.replaceState(state, '');
+      }
+      return;
+    }
+  } finally { openingPhotoViewer = false; }
   let i = Math.max(0, list.findIndex((x) => x.id === photoId));
   const urls = [];
-  const url = (b) => { const u = URL.createObjectURL(b); urls.push(u); return u; };
+  const url = (blob) => { const u = URL.createObjectURL(blob); urls.push(u); return u; };
   const v = $('#viewer');
-  v.innerHTML = `<div class="stage"><div class="track">${list.map((p) => `<div class="slide"><img alt="" draggable="false" src="${url(p.blob)}"></div>`).join('')}</div>
-      <span class="cnt"></span>
-      <button class="nav prev" data-a="prev" aria-label="Предыдущее фото">‹</button><button class="nav next" data-a="next" aria-label="Следующее фото">›</button></div>
-    <div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>
-    <button data-a="rotl" class="rot" aria-label="Повернуть против часовой">↺</button><button data-a="rot" class="rot" aria-label="Повернуть по часовой">↻</button>
-    <button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>`;
+  v.innerHTML = '<div class="stage"><div class="track">' +
+    list.map((p) => '<div class="slide"><img alt="" draggable="false" src="' + url(p.blob) + '"></div>').join('') +
+    '</div><span class="cnt"></span>' +
+    '<button class="nav prev" data-a="prev" aria-label="Предыдущее фото">‹</button>' +
+    '<button class="nav next" data-a="next" aria-label="Следующее фото">›</button></div>' +
+    '<div class="bar"><button data-a="del" style="background:#3a1512;color:#ff8a80">Удалить</button>' +
+    '<button data-a="rotl" class="rot" aria-label="Повернуть против часовой">↺</button>' +
+    '<button data-a="rot" class="rot" aria-label="Повернуть по часовой">↻</button>' +
+    '<button data-a="ocr" class="ocr">Считать модель</button><button data-a="x">Закрыть</button></div>';
   v.hidden = false;
   const track = $('.track', v);
-  const imgAt = (k) => track.children[k] && $('img', track.children[k]);
+  const btn = (name) => $('[data-a=' + name + ']', v);
+  const ocrBtn = btn('ocr');
+  const delBtn = btn('del');
   const count = () => {
     $('.cnt', v).textContent = list.length > 1 ? (i + 1) + ' / ' + list.length : '';
-    $('[data-a=prev]', v).hidden = i === 0; $('[data-a=next]', v).hidden = i >= list.length - 1;
+    btn('prev').hidden = i === 0;
+    btn('next').hidden = i >= list.length - 1;
   };
+  const viewerState = () => ({ ...history.state, viewer: { orderId: o.id, photoId: list[i].id } });
+  const rememberPhoto = () => {
+    if (history.state?.viewer?.orderId === o.id) history.replaceState(viewerState(), '');
+  };
+  if (fromHistory) rememberPhoto(); else history.pushState(viewerState(), '');
   const goTo = (k, smooth) => track.scrollTo({ left: k * track.clientWidth, behavior: smooth ? 'smooth' : 'auto' });
   goTo(i, false); count();
 
-  // Поворот: каждое нажатие — на четверть. Поворачиваем всегда исходный снимок на общий угол
-  // (без потери качества от нескольких пересжатий), записываем, когда ушли к другому фото или закрыли.
-  let rot = 0, rotBlob = null, rotIdx = -1, rotJob = Promise.resolve();
-  const saveRot = async () => {
-    const p = list[rotIdx]; const blob = rotBlob; const had = rot && blob && p;
-    rot = 0; rotBlob = null; rotIdx = -1;
-    if (!had) return;
-    p.blob = blob;
-    const fresh = await dbGet('photos', p.id);
-    if (fresh) { fresh.blob = blob; fresh.uploaded = 0; await dbPut('photos', fresh); }   // на Диск уйдёт повёрнутое
-    changed(); photoWidget(o, box);
+  let closed = false;
+  let closing = false;
+  let deleting = false;
+  let reading = null;
+  let rotation = null;
+  let photoWork = Promise.resolve();
+  const enqueue = (task, whenFailed) => {
+    photoWork = photoWork.then(task).catch((e) => toast(whenFailed + ': ' + e.message, 4000));
+    return photoWork;
   };
-  const flushRot = async () => { await rotJob; await saveRot(); };
-  const turn = (by) => { rotJob = rotJob.then(async () => {
-    if (rotIdx !== -1 && rotIdx !== i) await saveRot();
-    rotIdx = i;
-    rot = (rot + by + 360) % 360;
-    rotBlob = rot ? await rotateImage(list[i].blob, rot) : null;
-    imgAt(i).src = url(rotBlob || list[i].blob);
-  }).catch((e) => toast('Не получилось повернуть: ' + e.message, 4000)); };
-  $('[data-a=rot]', v).onclick = () => turn(90);
-  $('[data-a=rotl]', v).onclick = () => turn(-90);
+  const refreshPhotos = () => {
+    const panel = $('#photos');
+    if (location.hash === orderHash && panel?.dataset.orderId === o.id) return photoWidget(o, panel);
+  };
+  const saveRotation = async () => {
+    const pending = rotation;
+    if (!pending?.blob) { rotation = null; return; }
+    const { photo, blob } = pending;
+    const saved = await dbUpdatePhoto(photo.id, (fresh) => ({ ...fresh, blob, blobRevision: uid(), uploaded: 0 }));
+    rotation = null;
+    if (!saved) return;
+    photo.blob = blob;
+    changed();
+    await refreshPhotos();
+  };
+  const turn = (by) => {
+    if (deleting || closing || closed) return;
+    const photo = list[i];
+    const img = $('img', track.children[i]);
+    enqueue(async () => {
+      if (rotation && rotation.photo !== photo) await saveRotation();
+      const angle = ((rotation?.angle || 0) + by + 360) % 360;
+      const blob = angle ? await rotateImage(photo.blob, angle) : null;
+      rotation = { photo, angle, blob };
+      if (!closed && img.isConnected) img.src = url(blob || photo.blob);
+    }, 'Не получилось повернуть');
+  };
+  btn('rot').onclick = () => turn(90);
+  btn('rotl').onclick = () => turn(-90);
 
-  // Листание — прокрутка ленты: фото едет за пальцем и мягко доводится до соседнего
+  const cancelReading = () => {
+    if (!reading) return;
+    const job = reading;
+    reading = null;
+    job.controller.abort();
+    if (job.dialog) $('[data-a=no]', job.dialog)?.click();
+    ocrBtn.textContent = 'Считать модель';
+    ocrBtn.disabled = false;
+  };
   track.addEventListener('scroll', () => {
+    if (closed) return;
     const k = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
-    if (k !== i && k >= 0 && k < list.length) { i = k; count(); flushRot(); }
+    if (k === i || k < 0 || k >= list.length) return;
+    const previous = list[i];
+    i = k; count(); rememberPhoto();
+    cancelReading();
+    enqueue(() => rotation?.photo === previous ? saveRotation() : undefined, 'Не получилось сохранить поворот');
   }, { passive: true });
-  const step = (d) => { const k = Math.min(list.length - 1, Math.max(0, i + d)); if (k !== i) goTo(k, true); };
-  const onKey = (e) => { if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); else if (e.key === 'Escape') close(); };
+  const step = (d) => {
+    const k = Math.min(list.length - 1, Math.max(0, i + d));
+    if (k !== i) goTo(k, true);
+  };
+  const onKey = (e) => {
+    if (reading?.dialog?.open) return;
+    if (e.key === 'ArrowLeft') step(-1);
+    else if (e.key === 'ArrowRight') step(1);
+    else if (e.key === 'Escape') close();
+  };
   document.addEventListener('keydown', onKey);
-  $('[data-a=prev]', v).onclick = () => step(-1);
-  $('[data-a=next]', v).onclick = () => step(1);
-  const onResize = () => goTo(i, false);   // повернули телефон — остаёмся на том же фото
+  btn('prev').onclick = () => step(-1);
+  btn('next').onclick = () => step(1);
+  const onResize = () => goTo(i, false);
   window.addEventListener('resize', onResize);
 
-  // Жест «Назад» (и кнопка «Закрыть») закрывает просмотр: открываем его отдельным шагом истории
-  history.pushState({ viewer: 1 }, '');
-  let closed = false;
-  const finish = async () => {
-    if (closed) return; closed = true;
-    window.removeEventListener('popstate', finish); window.removeEventListener('resize', onResize);
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    cancelReading();
+    activePhotoViewer = null;
+    window.removeEventListener('resize', onResize);
     document.removeEventListener('keydown', onKey);
-    await flushRot();
     v.hidden = true; v.innerHTML = ''; urls.forEach((u) => URL.revokeObjectURL(u));
+    closingPhotoViewer = enqueue(saveRotation, 'Не получилось сохранить поворот');
   };
-  window.addEventListener('popstate', finish);
-  const close = () => { if (history.state && history.state.viewer) history.back(); else finish(); };
-  $('[data-a=x]', v).onclick = close;
-  $('[data-a=del]', v).onclick = async () => {
+  activePhotoViewer = { orderId: o.id, finish };
+  const close = () => {
+    if (closing || closed) return;
+    closing = true;
+    cancelReading();
+    if (history.state?.viewer?.orderId === o.id) history.back(); else finish();
+  };
+  btn('x').onclick = close;
+  delBtn.onclick = () => {
+    if (deleting || closing || closed) return;
+    const photo = list[i];
     if (!confirm('Удалить это фото?')) return;
-    await rotJob;
-    if (rotIdx === i) { rot = 0; rotBlob = null; rotIdx = -1; } else await saveRot();   // удаляем — его поворот не нужен
-    const p = list[i];
-    if (p.remotePath) await addPendingDelete(p.remotePath);
-    await dbDel('photos', p.id);
-    list.splice(i, 1); track.children[i].remove(); changed(); photoWidget(o, box);
-    if (!list.length) { close(); return; }
-    i = Math.min(i, list.length - 1); goTo(i, false); count();
+    deleting = true; delBtn.disabled = true;
+    cancelReading();
+    enqueue(async () => {
+      try {
+        await dbRemovePhoto(photo.id);
+        if (rotation?.photo === photo) rotation = null;
+        changed();
+        const current = list[i];
+        const removed = list.indexOf(photo);
+        list.splice(removed, 1);
+        track.children[removed].remove();
+        if (!closed) {
+          if (!list.length) close();
+          else {
+            i = current === photo ? Math.min(i, list.length - 1) : list.indexOf(current);
+            goTo(i, false); count(); rememberPhoto();
+          }
+        }
+        await refreshPhotos();
+      } finally { deleting = false; delBtn.disabled = false; }
+    }, 'Не удалось удалить фото');
   };
-  // Модель с шильдика — распознаётся в телефоне, вы выбираете и проверяете
-  $('[data-a=ocr]', v).onclick = async (e) => {
-    const btn = e.currentTarget; btn.disabled = true;
-    const reset = () => { btn.textContent = 'Считать модель'; btn.disabled = false; };
+
+  ocrBtn.onclick = async () => {
+    if (reading || deleting || closing || closed) return;
+    const photo = list[i];
+    const job = { controller: new AbortController(), dialog: null };
+    reading = job;
+    ocrBtn.disabled = true;
+    const current = () => reading === job && !closing && !closed && location.hash === orderHash && list[i] === photo;
     try {
-      await rotJob;
-      const r = await readPlate((rotIdx === i && rotBlob) || list[i].blob, (t) => { btn.textContent = t; });
-      reset();
-      const fresh = await dbGet('orders', o.id); if (!fresh) return;
-      const res = await plateDialog(r, fresh.model || '', fresh.device);
-      if (!res) return;
+      await photoWork;
+      if (!current()) return;
+      const blob = rotation?.photo === photo && rotation.blob ? rotation.blob : photo.blob;
+      const result = await readPlate(blob, (t) => { if (current()) ocrBtn.textContent = t; }, job.controller.signal);
+      if (!current()) return;
+      const fresh = await dbGet('orders', o.id);
+      if (!fresh || !current()) return;
+      const res = await plateDialog(result, fresh.model || '', fresh.device, (d) => { job.dialog = d; });
+      if (!res || !current()) return;
       const saved = [];
-      const current = await dbUpdateOrder(o.id, (rec) => {
+      await dbUpdateOrder(o.id, (rec) => {
+        if (!current()) return null;
         if (res.model) { rec.model = res.model; delete rec.modelAuto; saved.push('модель ' + res.model); }
-        if (res.dev === 'on' && r.device && !rec.device) { rec.device = r.device; delete rec.deviceAuto; saved.push(r.device); }
+        if (res.dev === 'on' && result.device && !rec.device) { rec.device = result.device; delete rec.deviceAuto; saved.push(result.device); }
         if (!saved.length) return null;
         rec.updatedAt = Date.now();
         return rec;
       });
-      if (!current || !saved.length) return;
-      Object.assign(o, { model: current.model, device: current.device });
+      if (!saved.length) return;
       toast(saved.join(', ').replace(/^./, (c) => c.toUpperCase()) + ' — записано'); changed();
-      close();
-      if (location.hash.startsWith('#/order/')) route();
-    } catch (err) { console.error(err); toast(err.message || 'Не получилось прочитать', 4000); reset(); }
+      if (current()) close();
+      if (location.hash === orderHash) route();
+    } catch (e) { if (current()) toast(e.message || 'Не получилось прочитать', 4000); }
+    finally { if (reading === job) cancelReading(); }
   };
 }
 
-function plateDialog(r, cur, curDevice) {
+function plateDialog(r, cur, curDevice, onOpen) {
   const guess = r.models[0] ? plateLabel(r.brand, r.models[0]) : r.brand;
   return formDialog('Модель с шильдика', `
     ${r.note ? `<p class="small warn-text" style="margin-top:0">${esc(r.note)}</p>` : ''}
@@ -1062,7 +1266,10 @@ function plateDialog(r, cur, curDevice) {
     ${cur && cur !== guess ? `<p class="note" style="margin-top:-4px">Сейчас записано: ${esc(cur)}</p>` : ''}
     ${r.lines.length ? `<details class="tg"><summary>Весь текст с шильдика</summary>
       <div class="chips" style="margin-top:8px">${r.lines.map((l) => `<button type="button" class="chip" data-m="${esc(l)}">${esc(l)}</button>`).join('')}</div></details>` : ''}`,
-  (d) => $$('[data-m]', d).forEach((b) => b.onclick = () => { $('[name=model]', d).value = b.dataset.m; }));
+  (d) => {
+    $$('[data-m]', d).forEach((b) => b.onclick = () => { $('[name=model]', d).value = b.dataset.m; });
+    if (onOpen) onOpen(d);
+  });
 }
 
 // ---------- Закрытие заявки ----------
@@ -1531,7 +1738,8 @@ async function renderSettings() {
         Можно отправить себе в Telegram: без пароля его никто не прочитает.</p>
       <button class="btn sec" id="share">Отправить копию…</button>
       <button class="btn sec" id="download">Скачать копию файлом</button>
-      <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".txt,.json,text/plain,application/json" hidden></label>
+      <label class="btn danger" style="margin-top:8px">Восстановить из файла<input type="file" id="restore" accept=".txt,.json,.bin,text/plain,application/json,application/octet-stream" hidden></label>
+      <p class="note">Подходит и зашифрованный файл .bin из папки «История» на Диске.</p>
     </details>
     <details class="card fold" data-fold="csv" ${foldAttr('csv')}><summary><h2>Таблица для Excel</h2></summary>
       <p class="note" style="margin-top:0">Скачать можно только с паролем. Сам файл <b class="neg">не зашифрован</b>:
@@ -1697,17 +1905,23 @@ async function renderSettings() {
   const fd = $('#fromDisk'); if (fd) fd.onclick = async () => {
     if (comparingDisk) return;
     if (!confirm('Заменить данные в телефоне копией с Диска? Несохранённые на Диск изменения пропадут.')) return;
+    comparingDisk = true;
     try {
+      const previousPause = await getMeta('syncPaused');
       await beginDiskCheck();
-      const d = await downloadDiskDump(askCopyPassword);
-      if (!d) { await setMeta('syncPaused', null); toast('На Диске ещё нет копии'); return; }
+      const backup = await downloadDiskBackup(askCopyPassword);
+      if (!backup) { await setMeta('syncPaused', previousPause || null); toast('На Диске ещё нет копии'); return; }
       const local = await buildDump();
-      if (local.orders.length + local.expenses.length) await saveHistoryCopy('phone', local);
-      await restoreDump(d, true);
+      if (local.orders.length + local.expenses.length) await saveHistoryCopy('phone', local, backup.enc);
+      await restoreDump(backup.dump, true, backup.enc);
       await setMetaEntries({ diskLayout: 2, syncPaused: null });
       toast('Восстановлено с Диска'); go('#/orders');
     } catch (e) { toast(e.message); }
-    finally { updateSyncBadge(); if (location.hash.startsWith('#/settings')) renderSettings(); }
+    finally {
+      comparingDisk = false;
+      updateSyncBadge();
+      if (location.hash.startsWith('#/settings')) renderSettings();
+    }
   };
   const dc = $('#disconnect'); if (dc) dc.onclick = async () => {
     if (!confirm('Отключить Яндекс Диск? Данные в телефоне останутся.')) return;
@@ -1717,9 +1931,15 @@ async function renderSettings() {
 
   const dumpFile = async () => {
     if (!(await hasPassword())) { toast('Сначала задайте пароль'); return null; }
-    const bytes = await encryptBytes(JSON.stringify(await buildDump()));
-    const text = 'Мои заявки: зашифрованная копия. Открывается только в приложении с паролем.\n' + toBase64(bytes) + '\n';
-    return new File([text], 'заявки-копия-' + toDateInput(Date.now()) + '.txt', { type: 'text/plain' });
+    try {
+      const dump = await includePendingPhotoBytes(await buildDump());
+      const bytes = await encryptBytes(JSON.stringify(dump));
+      const text = 'Мои заявки: зашифрованная копия. Открывается только в приложении с паролем.\n' + toBase64(bytes) + '\n';
+      return new File([text], 'заявки-копия-' + toDateInput(Date.now()) + '.txt', { type: 'text/plain' });
+    } catch (err) {
+      toast('Не удалось подготовить копию: ' + err.message, 5000);
+      return null;
+    }
   };
   const saveFile = (file) => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
@@ -1752,15 +1972,8 @@ async function renderSettings() {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     if (!confirm('Заменить все данные в телефоне данными из файла?')) return;
     try {
-      const txt = await f.text();
-      let d;
-      if (txt.trim().startsWith('{')) d = JSON.parse(txt); // старая незашифрованная копия (версия 1.0)
-      else {
-        const b64 = txt.split('\n').map((l) => l.trim()).filter((l) => /^[A-Za-z0-9+/=]+$/.test(l)).join('');
-        if (!b64) throw new Error('Это не файл копии заявок');
-        d = JSON.parse(new TextDecoder().decode(await decryptBytes(fromBase64(b64), askCopyPassword)));
-      }
-      await restoreDump(d, false);
+      const backup = await readBackupFile(f, askCopyPassword);
+      await restoreDump(backup.dump, false, backup.enc);
       toast('Восстановлено из файла'); requestSync(); go('#/orders');
     } catch (err) { toast(err.message); }
   };
@@ -1878,19 +2091,22 @@ async function checkDiskCopy(token) {
   try {
     await beginDiskCheck(token);
     updateSyncBadge();
-    const d = await downloadDiskDump(askCopyPassword);
+    const backup = await downloadDiskBackup(askCopyPassword);
+    const d = backup?.dump;
     const local = await buildDump();
     const hasLocal = local.orders.length + local.expenses.length > 0;
     const diskHas = d && d.orders.length + (d.expenses || []).length > 0;
-    if (!d || (!diskHas && !hasLocal) || (diskHas && _isOlderCopyOfThis(d, local))) {
+    const sameKey = backup && await matchesActiveBackupKey(backup.enc);
+    if (!d || (sameKey && ((!diskHas && !hasLocal) || (diskHas && _isOlderCopyOfThis(d, local))))) {
+      await prepareDiskWrite(d || null);
       if (hasLocal) await markDirty();
-      await setMeta('syncPaused', null);
+      await setMetaEntries(d ? { diskLayout: 2, syncPaused: null } : { syncPaused: null });
       requestSync();
       return;
     }
     await setMeta('syncPaused', 'both');
     updateSyncBadge();
-    await diskChoiceDialog(d, local);
+    await diskChoiceDialog(backup, local);
   } catch (e) {
     toast('Не удалось проверить копию на Диске (' + e.message + '). Отправка на паузе — «Настройки» → «Проверить копию на Диске».', 7000);
   } finally {
@@ -1901,11 +2117,12 @@ async function checkDiskCopy(token) {
 }
 
 // В телефоне и на Диске разные данные. Ничего не затираем молча: показываем обе копии, выбираете вы.
-async function diskChoiceDialog(disk, local) {
+async function diskChoiceDialog(backup, local) {
+  const disk = backup.dump;
   const dd = document.createElement('dialog');
   dd.className = 'pw';
   dd.innerHTML = `<div class="dlg"><h3>На Диске другая копия</h3>
-    <p class="small" style="margin-top:0">Данные в телефоне и на Диске различаются. Пока вы не выберете, на Диск ничего не отправляется.</p>
+    <p class="small" style="margin-top:0">Сравните копии и выберите, какую оставить. Обычная отправка на Диск пока на паузе.</p>
     <div class="stat">
       <span>📱 В телефоне</span><span>${_copyLine(local, _lastEdit(local) ? 'правка ' + fmtDate(_lastEdit(local)) : '')}</span>
       <span>☁ На Диске</span><span>${_copyLine(disk, disk.exportedAt ? 'сохранена ' + fmtDate(new Date(disk.exportedAt).getTime()) : '')}</span>
@@ -1927,20 +2144,21 @@ async function diskChoiceDialog(disk, local) {
     if (choice === 'disk') {
       toast('Сохраняю копию телефона…');
       const current = await buildDump();
-      if (current.orders.length + current.expenses.length) await saveHistoryCopy('phone', current);
-      await restoreDump(disk, true);
+      if (current.orders.length + current.expenses.length) await saveHistoryCopy('phone', current, backup.enc);
+      await restoreDump(disk, true, backup.enc);
       await setMetaEntries({ diskLayout: 2, syncPaused: null });
       toast('Загружено с Диска', 5000);
     } else if (choice === 'phone') {
-      if (!confirm('Заменить копию на Диске данными телефона? Прежняя копия Диска сохранится в «Истории».')) return await diskChoiceDialog(disk, local);
+      if (!confirm('Заменить копию на Диске данными телефона? Прежняя копия Диска сохранится в «Истории».')) return await diskChoiceDialog(backup, local);
+      await prepareDiskWrite(disk);
       toast('Сохраняю копию Диска…');
       await saveHistoryCopy('disk');
       await markDirty();
-      await setMeta('syncPaused', null);
+      await setMetaEntries({ diskLayout: 2, syncPaused: null });
       toast('Отправляю данные телефона на Диск', 4000);
       requestSync();
     }
-  } catch (e) { toast('Не получилось: ' + e.message + '. Ничего не изменено.', 6000); }
+  } catch (e) { toast('Не получилось завершить: ' + e.message, 6000); }
 }
 
 // ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================

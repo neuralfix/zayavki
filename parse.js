@@ -8,7 +8,7 @@ const PARSE_DEV = [
   ['Телевизор', /(^|[^а-яёa-z])(тв|телевизор[а-яё]*|телик|tv)(?![а-яёa-z])/i],
 ];
 const PARSE_LABEL = [
-  ['phone', /^(тел(ефон)?|номер|моб(ильный)?|т\.)(?![а-яёa-z])\s*[:.\-–]?\s*/i],
+  ['phone', /^(тел(ефон)?|номер|моб(ильный)?|т\.)(?![а-яёa-z])\.?\s*[:\-–]?\s*/i],
   ['address', /^(адрес|адр)(?![а-яёa-z])\s*[:.\-–]?\s*/i],
   ['name', /^(имя|клиент|фио|ф\.и\.о\.?|контакт(ное лицо)?|заказчик)\s*[:.\-–]\s*/i],
   ['device', /^(техника|устройство|прибор|оборудование|что ремонтир\w*)\s*[:.\-–]\s*/i],
@@ -16,11 +16,13 @@ const PARSE_LABEL = [
   ['problem', /^(проблема|неисправность|описание|поломка|что случилось|причина( обращения)?|комментарий)\s*[:.\-–]\s*/i],
   ['when', /^(время|дата|когда|дата и время|визит|выезд)\s*[:.\-–]\s*/i],
 ];
+const PARSE_CITY_PHONE = /^\d{3}[\s\-–—]*\d{2}[\s\-–—]*\d{2}(?![\dа-яёa-z]|\s*[-–—]\s*\d)/i;
 const PARSE_WEEK = ['воскресень[ея]', 'понедельник', 'вторник', 'сред[ауые]', 'четверг', 'пятниц[ауые]', 'суббот[ауые]']
   .map((day) => new RegExp('(^|[^а-яa-z])(?:(?:в|во|на)\\s+)?' + day + '(?![а-яa-z])'));
 const PARSE_HOUR_END = '(?:\\s*ч(?:ас(?:а|ов)?)?(?![а-я]))?(?:\\s*(?:до|[-–—])\\s*(?:[01]?\\d|2[0-3])(?:[:.][0-5]\\d)?(?![\\d.:]))?';
 const PARSE_CLOCK = new RegExp('(^|[^\\d.:а-яa-z])(?:(?:в|к|с|после|около|на)\\s+)?([01]?\\d|2[0-3])[:.]([0-5]\\d)(?![\\d.:])' + PARSE_HOUR_END);
 const PARSE_BARE_HOUR = new RegExp('(^|[\\s,;])(?:в|к|с|после|около|на)\\s+(0?[7-9]|1\\d|2[0-2])(?![\\d.:])' + PARSE_HOUR_END);
+const PARSE_DAY_PART = /^([\s,]+)(?:утром|днем|вечером|ночью|до обеда|после обеда|после работы|в первой половине дня|во второй половине дня|в течение дня|к вечеру|под вечер)(?![а-яa-z])/;
 const PARSE_ADDRESS_PART = /^(?:ул|улица|пр|пр-?т|проспект|пер|переулок|б-р|бульвар|ш\.|шоссе|мкр|д\.|дом|кв|корп|под|подъезд|эт|этаж|г\.|село|с\.|п\.|дер)(?=[\s.\d]|$)/i;
 
 function parseDeviceOf(t) {
@@ -66,6 +68,14 @@ function parseWhen(line, now = new Date()) {
     mark(m);
   }
   if (hh === null && !date) return null;
+  if (hh === null && spans.length) {
+    const end = spans[0].end;
+    const partOfDay = t.slice(end).match(PARSE_DAY_PART);
+    if (partOfDay) {
+      partOfDay.index += end;
+      mark(partOfDay);
+    }
+  }
   if (!date) {   // только время: сегодня, а если уже прошло — завтра
     date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     if (hh !== null && (hh * 60 + mm) < now.getHours() * 60 + now.getMinutes() - 30) date.setDate(date.getDate() + 1);
@@ -107,7 +117,8 @@ const parseLooksAddress = (s) => /\d/.test(s) && /[а-яё]{3,}/i.test(s) &&
   (s.split(',').some((part) => PARSE_ADDRESS_PART.test(part.trim()) || /^[А-ЯЁ0-9][а-яё.\s-]+\d+/.test(part.trim())) ||
     /^[а-яё]+(?:\s*,\s*|\s+)\d+[а-яё]?(?=[\s,/-]|$)/i.test(s) || /\d+\s*-\s*\d+/.test(s));
 const parseLooksName = (s) => /^[А-ЯЁ][а-яё]+(\s+[А-ЯЁ][а-яё]+){0,2}$/.test(s.trim()) && !parseDeviceOf(s);
-const parseLabelOf = (s) => PARSE_LABEL.find(([key, re]) => re.test(s) && (key !== 'phone' || PHONE_RE.test(s)));
+const parseLabelOf = (s) => PARSE_LABEL.find(([key, re]) => re.test(s) &&
+  (key !== 'phone' || PHONE_RE.test(s) || PARSE_CITY_PHONE.test(s.replace(re, ''))));
 
 function parseOrderText(text) {
   const r = { phone: '', name: '', address: '', apt: '', entrance: '', floor: '', device: '', model: '', problem: '', visitAt: null, whenNote: '' };
@@ -129,8 +140,8 @@ function parseOrderText(text) {
     let [label = '', labelPattern] = parseLabelOf(line) || [];
     if (labelPattern) line = line.replace(labelPattern, '').trim();
     // телефон — где угодно в строке
-    const pm = line.match(PHONE_RE);
-    if (pm && digits(pm[0]).length >= 10) {
+    const pm = line.match(PHONE_RE) || (label === 'phone' && line.match(PARSE_CITY_PHONE));
+    if (pm) {
       if (!r.phone) r.phone = fmtPhone(pm[0]); else problem.push('доп. телефон ' + fmtPhone(pm[0]));
       line = line.replace(pm[0], '').replace(/^[\s,.;:–-]+|[\s,.;:–-]+$/g, '');
       if (!line) continue;

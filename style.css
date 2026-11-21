@@ -270,6 +270,11 @@ body.typing .fab { display: none; }
 #viewer .bar button.rot { flex: 0 0 52px; background: #1d3239; color: #5cc3d6; font-size: 24px; padding: 8px 0; }
 #viewer .bar button.ocr { flex: 1.4; background: var(--accent); color: #fff; }
 @media (prefers-color-scheme: dark) { #viewer .bar button.ocr { color: #062228; } }
+@media (max-width: 360px) {
+  #viewer .bar { gap: 6px; padding-inline: 8px; justify-content: center; flex-wrap: wrap; }
+  #viewer .bar button { padding-inline: 4px; }
+  #viewer .bar button.rot { flex-basis: 42px; }
+}
 
 /* Отчёт */
 .month-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }

@@ -109,19 +109,39 @@ async function dbCreateOrder(rec) {
 }
 
 // Правки формы и распознавания применяются к последней сохранённой версии заявки.
-async function dbUpdateOrder(id, update) {
+const dbUpdateOrder = (id, update) => _updateRecord('orders', id, update);
+const dbUpdatePhoto = (id, update) => _updateRecord('photos', id, update);
+
+function dbConfirmPhotoUpload(photo, path) {
+  return _updateRecord('photos', photo.id, (current) => {
+    if (current.blobRevision !== photo.blobRevision || !current.blob) return null;
+    return { ...current, uploaded: 1, remotePath: path };
+  }, { photoUploaded: true });
+}
+
+async function _updateRecord(table, id, update, { photoUploaded = false } = {}) {
   const d = await openDB();
   return new Promise((resolve, reject) => {
-    const t = d.transaction('orders', 'readwrite');
-    const orders = t.objectStore('orders');
-    const request = orders.get(id);
+    const t = d.transaction(photoUploaded ? [table, 'meta'] : table, 'readwrite');
+    const store = t.objectStore(table);
+    const request = store.get(id);
     let result;
     request.onsuccess = () => {
       const current = request.result;
       if (!current) return;
       try {
         const next = update(current);
-        if (next) orders.put(next);
+        if (next) {
+          store.put(next);
+          if (photoUploaded) {
+            const entries = { dataVersion: _nextDataVersion };
+            const previousPath = current.remotePath;
+            if (previousPath && previousPath !== next.remotePath) {
+              entries.pendingDeletes = (list) => _enqueuePhotoDelete(list, previousPath);
+            }
+            _writeMetaEntries(t.objectStore('meta'), entries);
+          }
+        }
         result = next || current;
       } catch (e) {
         t.abort();
@@ -129,15 +149,16 @@ async function dbUpdateOrder(id, update) {
       }
     };
     t.oncomplete = () => resolve(result);
-    t.onabort = () => reject(t.error || new Error('Заявка не сохранилась'));
+    t.onabort = () => reject(t.error || new Error('Не удалось сохранить изменения'));
   });
 }
 
 // Отметка «данные изменились, надо отправить на Диск».
+const _nextDataVersion = (current) => (current || 0) + 1;
 async function markDirty() {
   let version;
   await setMetaEntries({ dataVersion: (current) => {
-    version = (current || 0) + 1;
+    version = _nextDataVersion(current);
     return version;
   } });
   return version;
@@ -146,11 +167,35 @@ async function markDirty() {
 // Удалённое фото стирается с Диска не сразу, а через 14 дней: на него ещё ссылаются прошлые копии в «Истории».
 async function addPendingDelete(path) {
   if (!path) return;
-  await setMetaEntries({ pendingDeletes: (current) => {
-    const list = current || [];
-    if (!list.some((x) => (x.path || x) === path)) list.push({ path, at: Date.now() });
-    return list;
-  } });
+  await setMetaEntries({ pendingDeletes: (list) => _enqueuePhotoDelete(list, path) });
+}
+
+function _enqueuePhotoDelete(current, path) {
+  const list = current || [];
+  if (!list.some((x) => (x.path || x) === path)) list.push({ path, at: Date.now() });
+  return list;
+}
+
+// Удаляем запись и ставим в очередь путь из той же версии фото, которую удалили.
+async function dbRemovePhoto(id) {
+  const d = await openDB();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(['photos', 'meta'], 'readwrite');
+    const photos = t.objectStore('photos');
+    const request = photos.get(id);
+    request.onsuccess = () => {
+      const photo = request.result;
+      if (!photo) return;
+      photos.delete(id);
+      if (photo.remotePath) {
+        _writeMetaEntries(t.objectStore('meta'), {
+          pendingDeletes: (list) => _enqueuePhotoDelete(list, photo.remotePath),
+        });
+      }
+    };
+    t.oncomplete = () => resolve();
+    t.onabort = () => reject(t.error || new Error('Не удалось удалить фото'));
+  });
 }
 
 // Расчёты по заявке

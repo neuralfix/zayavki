@@ -86,8 +86,8 @@ async function ydCopy(token, from, path) {
   await ydFail(r);
 }
 
-async function ydList(token, path) {
-  const r = await ydFetch(token, '/resources?limit=200&fields=_embedded.items.name&path=' + encodeURIComponent(path));
+async function ydList(token, path, offset = 0) {
+  const r = await ydFetch(token, '/resources?limit=200&offset=' + offset + '&fields=_embedded.items.name&path=' + encodeURIComponent(path));
   if (r.status === 404) return [];
   if (!r.ok) await ydFail(r);
   const j = await r.json();
@@ -109,14 +109,40 @@ async function _historyCopy(token) {
 }
 
 // Сохранить в «Историю» отдельную копию (данные телефона перед восстановлением, копию Диска перед заменой)
-async function saveHistoryCopy(kind, dump) {
+async function saveHistoryCopy(kind, dump, fallbackKey) {
   const token = await getMeta('ydToken');
   if (!token) return;
   await _retry(() => ydMkdir(token, ROOT));
   await _retry(() => ydMkdir(token, HIST_DIR));
   const name = HIST_DIR + '/' + kind + '-' + _day() + '-' + Date.now().toString(36) + '.bin';
-  if (dump) { const body = new Blob([await encryptBytes(JSON.stringify(dump))]); await _retry(() => ydUpload(token, name, body)); }
-  else await _retry(() => ydCopy(token, ROOT + 'data.bin', name));
+  if (dump) {
+    const owned = _ownedPhotos(dump.orders, dump.photos || []);
+    const missing = await _missingPhotoFiles(token, owned);
+    const copy = await includePendingPhotoBytes(dump, missing);
+    const unavailable = copy.photos.filter((p) => missing.has(p.id) && !p.inlinePhoto);
+    if (unavailable.length) throw _missingPhotosError(unavailable.length);
+    const body = new Blob([await encryptBytes(JSON.stringify(copy), fallbackKey)]);
+    await _retry(() => ydUpload(token, name, body));
+  } else {
+    const saved = await _retry(() => ydCopy(token, ROOT + 'data.bin', name));
+    if (!saved) throw new Error('Копия на Диске исчезла. Проверьте её ещё раз');
+  }
+}
+
+// Снимки, которые ещё не были отправлены, нужны внутри архива: на Диске для них может не быть файла.
+async function includePendingPhotoBytes(dump, missing = new Set()) {
+  const orderIds = new Set(dump.orders.map((o) => o.id));
+  const local = new Map((await dbAll('photos')).map((p) => [p.id, p]));
+  const photos = [];
+  for (const p of dump.photos || []) {
+    const current = local.get(p.id);
+    if (orderIds.has(p.orderId) && current?.orderId === p.orderId && current.blob
+        && (!p.uploaded || !p.remotePath || missing.has(p.id) || current.blobRevision !== p.blobRevision)) {
+      const inlinePhoto = toBase64(new Uint8Array(await current.blob.arrayBuffer()));
+      photos.push({ ...p, inlinePhoto, photoType: current.blob.type });
+    } else photos.push(p);
+  }
+  return { ...dump, photos };
 }
 
 async function ydDownloadBytes(token, path) {
@@ -131,7 +157,7 @@ async function ydDownloadBytes(token, path) {
 }
 
 // Скачать с Диска и расшифровать фото, которого нет в телефоне (например, после переезда на новый телефон).
-async function fetchPhoto(id) {
+async function fetchPhoto(id, askPassword) {
   const p = await dbGet('photos', id);
   if (!p || p.blob) return p;
   const token = await getMeta('ydToken');
@@ -140,19 +166,37 @@ async function fetchPhoto(id) {
   const bytes = await ydDownloadBytes(token, p.remotePath);
   if (!bytes) throw new Error('Фото не найдено на Диске');
   let plain;
-  try { plain = await decryptBytes(bytes, null); } catch (e) { throw new Error('Фото зашифровано другим паролем'); }
-  p.blob = new Blob([plain], { type: 'image/jpeg' });
-  p.uploaded = 1;
-  await dbPut('photos', p);
-  return p;
+  try { plain = await decryptBytes(bytes, askPassword); } catch (e) {
+    if (e instanceof WrongPassword) throw new Error('Фото зашифровано другим паролем');
+    throw e;
+  }
+  return dbUpdatePhoto(id, (current) => {
+    if (current.blob || current.orderId !== p.orderId || current.remotePath !== p.remotePath
+        || current.blobRevision !== p.blobRevision) return null;
+    return { ...current, blob: new Blob([plain], { type: 'image/jpeg' }), uploaded: 1 };
+  });
 }
 
-// Скачать копию с Диска. Возвращает данные или null, если копии там нет.
-async function downloadDiskDump(askPassword) {
+async function _readEncryptedBackup(bytes, askPassword) {
+  const { plain, enc } = await decryptWithKey(bytes, askPassword);
+  return { dump: JSON.parse(new TextDecoder().decode(plain)), enc };
+}
+
+// Скачать копию с Диска для проверки. Телефон продолжает использовать текущий пароль.
+async function downloadDiskBackup(askPassword) {
   const bytes = await ydDownloadBytes(await getMeta('ydToken'), ROOT + 'data.bin');
   if (!bytes) return null;
-  const plain = await decryptBytes(bytes, askPassword);
-  return JSON.parse(new TextDecoder().decode(plain));
+  return _readEncryptedBackup(bytes, askPassword);
+}
+
+async function readBackupFile(file, askPassword) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (encInfo(bytes)) return _readEncryptedBackup(bytes, askPassword);
+  const text = new TextDecoder().decode(bytes);
+  if (text.trimStart().startsWith('{')) return { dump: JSON.parse(text), enc: null };
+  const b64 = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[A-Za-z0-9+/=]+$/.test(line)).join('');
+  if (!b64) throw new Error('Это не файл копии заявок');
+  return _readEncryptedBackup(fromBase64(b64), askPassword);
 }
 
 // ---------- Выгрузка данных ----------
@@ -246,18 +290,22 @@ function beginDiskCheck(token) {
   return withDiskSyncLock(() => setMetaEntries(entries));
 }
 
-const _photoPath = (id) => PHOTOS_DIR + '/' + id + '.bin';
+const _photoPath = (photo) => PHOTOS_DIR + '/' + photo.id
+  + (photo.blobRevision && photo.blobRevision !== photo.id ? '-' + photo.blobRevision : '') + '.bin';
 const _pendingDeletePath = (entry) => typeof entry === 'string' ? entry : entry.path;
 const _dueDeletes = (list) => list.filter((x) => typeof x === 'string' || Date.now() - (x.at || 0) >= PHOTO_DELETE_AFTER)
   .map(_pendingDeletePath);
 
-function _livePhotoPaths(orders, photos) {
+function _ownedPhotos(orders, photos) {
   const orderIds = new Set(orders.map((o) => o.id));
+  return photos.filter((p) => orderIds.has(p.orderId));
+}
+
+function _livePhotoPaths(orders, photos) {
   const paths = new Set();
-  for (const p of photos) {
-    if (!orderIds.has(p.orderId)) continue;
+  for (const p of _ownedPhotos(orders, photos)) {
     if (p.remotePath) paths.add(p.remotePath);
-    paths.add(_photoPath(p.id));
+    paths.add(_photoPath(p));
   }
   return paths;
 }
@@ -270,14 +318,78 @@ async function _pending() {
   return { photos, deletes, version, dataPending };
 }
 
+// После смены папки отметка «отправлено» в телефоне может относиться к прежнему Диску.
+async function prepareDiskWrite(diskDump) {
+  return withDiskSyncLock(async () => {
+    const token = await getMeta('ydToken');
+    if (!token) throw new Error('Подключите Яндекс Диск');
+    await _preparePhotoWrites(token);
+    if (!diskDump) await setMeta('histDay', null);
+  });
+}
+
+async function _preparePhotoWrites(token) {
+  const photos = _ownedPhotos(await dbAll('orders'), await dbAll('photos'));
+  const missing = await _missingPhotoFiles(token, photos);
+  const unavailable = photos.filter((p) => missing.has(p.id) && !p.blob);
+  if (unavailable.length) throw _missingPhotosError(unavailable.length);
+  for (const p of photos) {
+    if (missing.has(p.id)) {
+      await dbUpdatePhoto(p.id, (current) => ({ ...current, uploaded: 0, remotePath: null }));
+    } else if (!p.blob && !p.uploaded) {
+      await dbUpdatePhoto(p.id, (current) => current.blob ? null : { ...current, uploaded: 1 });
+    }
+  }
+  await setMeta('photosNeedCheck', null);
+}
+
+function _missingPhotosError(count) {
+  return new Error('Фото без доступной копии: ' + count + '. Подключите прежний Диск или восстановите фото из копии');
+}
+
+async function _missingPhotoFiles(token, photos) {
+  const prefix = PHOTOS_DIR + '/';
+  const inPhotoFolder = (p) => typeof p.remotePath === 'string' && p.remotePath.startsWith(prefix)
+    && !p.remotePath.slice(prefix.length).includes('/');
+  const listed = new Set();
+  if (photos.some(inPhotoFolder)) {
+    for (let offset = 0; ; offset += 200) {
+      const names = await _retry(() => ydList(token, PHOTOS_DIR, offset));
+      for (const name of names) listed.add(prefix + name);
+      if (names.length < 200) break;
+    }
+  }
+  const exists = async (p) => {
+    if (!p.remotePath) return false;
+    if (inPhotoFolder(p)) return listed.has(p.remotePath);
+    const r = await _retry(async () => {
+      const r = await ydFetch(token, '/resources?fields=type&path=' + encodeURIComponent(p.remotePath));
+      if (!(r.ok || r.status === 404)) await ydFail(r);
+      return r;
+    });
+    return r.ok;
+  };
+  const missing = new Set();
+  for (const photo of photos) {
+    if (!await exists(photo)) missing.add(photo.id);
+  }
+  return missing;
+}
+
 // Переход с версии 1.0: там файлы лежали на Диске открыто, а папки назывались по имени и адресу клиента.
 // Удаляем их насовсем (не в корзину) и отправляем всё заново в зашифрованном виде.
 async function _migrateToEncrypted(token) {
+  const photos = await dbAll('photos');
+  const orders = new Set((await dbAll('orders')).map((o) => o.id));
+  const legacyPhoto = (p) => p.remotePath && !p.remotePath.startsWith(PHOTOS_DIR + '/');
+  if (photos.some((p) => legacyPhoto(p) && !p.blob && orders.has(p.orderId))) {
+    throw new Error('Для перехода на зашифрованные копии нужны снимки со старого телефона');
+  }
   for (const f of ['data.json', 'Заявки.csv', 'Расходы.csv']) await ydDelete(token, ROOT + f, true);
   await ydDelete(token, LEGACY_DIR, true);
-  for (const p of await dbAll('photos')) {
-    if (p.remotePath && !p.remotePath.startsWith(PHOTOS_DIR + '/')) {
-      p.uploaded = 0; p.remotePath = null; await dbPut('photos', p);
+  for (const p of photos) {
+    if (legacyPhoto(p)) {
+      await dbUpdatePhoto(p.id, (current) => ({ ...current, uploaded: 0, remotePath: null }));
     }
   }
   for (const o of await dbAll('orders')) {
@@ -286,6 +398,25 @@ async function _migrateToEncrypted(token) {
   await setMeta('pendingDeletes', []);
   await setMeta('diskLayout', 2);
   await markDirty();
+}
+
+async function _uploadPendingPhotos(token, photos) {
+  if (!photos.length) return 0;
+  const before = (await dbAll('photos')).filter((p) => p.uploaded).length;
+  await _retry(() => ydMkdir(token, PHOTOS_DIR));
+  let sent = 0;
+  for (const photo of photos) {
+    const path = _photoPath(photo);
+    const body = new Blob([await encryptBytes(photo.blob)]);
+    await _retry(() => ydUpload(token, path, body));
+    if (photos.length > 20) await _sleep(250);
+    const fresh = await dbConfirmPhotoUpload(photo, path);
+    // Пока шла отправка, снимок могли удалить или повернуть. Новая версия остаётся в очереди.
+    if (!fresh || fresh.remotePath !== path) await addPendingDelete(path);
+    sent++;
+    _notify({ type: 'progress', sent, total: photos.length, done: before + sent, all: before + photos.length });
+  }
+  return sent;
 }
 
 async function _doSync() {
@@ -297,39 +428,38 @@ async function _doSync() {
   if (await getMeta('syncPaused')) return { status: 'paused' };
 
   const needMigrate = (await getMeta('diskLayout')) !== 2;
+  const needsPhotoCheck = await getMeta('photosNeedCheck');
   let q = await _pending();
-  if (!needMigrate && !q.photos.length && !q.deletes.length && !q.dataPending) {
+  if (!needMigrate && !needsPhotoCheck && !q.photos.length && !q.deletes.length && !q.dataPending) {
     await setMeta('syncWaiting', false);
     return { status: 'nothing' };
   }
 
   _notify({ type: 'start' });
   let sent = 0;
-  const before = (await dbAll('photos')).filter((p) => p.uploaded).length;   // для процента «отправлено из всех»
   try {
+    if (needsPhotoCheck) { await _preparePhotoWrites(token); q = await _pending(); }
     await _retry(() => ydMkdir(token, ROOT));
     if (needMigrate) { await _migrateToEncrypted(token); q = await _pending(); }
-    if (q.photos.length) await _retry(() => ydMkdir(token, PHOTOS_DIR));
+    for (;;) {
+      sent += await _uploadPendingPhotos(token, q.photos);
+      q = await _pending();
+      if (q.photos.length) continue;
+      if (!q.dataPending && !sent) break;
 
-    // 1. Фото: имя файла — случайный номер, внутри — зашифрованный снимок
-    for (const p of q.photos) {
-      const path = _photoPath(p.id);
-      const body = new Blob([await encryptBytes(p.blob)]);
-      await _retry(() => ydUpload(token, path, body));
-      if (q.photos.length > 20) await _sleep(250);   // много фото подряд — не торопим Диск, иначе он блокирует папку
-      const fresh = await dbGet('photos', p.id);
-      if (fresh) { fresh.uploaded = 1; fresh.remotePath = path; await dbPut('photos', fresh); }
-      sent++;
-      _notify({ type: 'progress', sent, total: q.photos.length, done: before + sent, all: before + q.photos.length });
-    }
-
-    // 2. После проверки Диска отправляем и пустую копию: последняя запись могла быть удалена.
-    if (q.dataPending || sent) {
+      // До записи data.bin все снимки, на которые ссылается копия, уже должны быть на Диске.
       const dump = await buildDump();
+      const owners = new Set(dump.orders.map((o) => o.id));
+      if (dump.photos.some((p) => owners.has(p.orderId) && (!p.uploaded || !p.remotePath))) {
+        q = await _pending();
+        if (q.photos.length) continue;
+        throw new Error('Не все фото готовы к сохранению. Проверьте копию на Диске');
+      }
       await _historyCopy(token);   // прежняя копия — в «Историю»
       const body = new Blob([await encryptBytes(JSON.stringify(dump))]);
       await _retry(() => ydUpload(token, ROOT + 'data.bin', body));
       await setMeta('syncedVersion', q.version);
+      break;
     }
 
     // 3. Удалённое в приложении (больше 14 дней назад) — в корзину Диска (там тоже только зашифрованное)
@@ -367,7 +497,7 @@ function _notify(msg) {
 }
 
 // Восстановить данные из выгрузки (файл или Диск). Фото, которых нет в телефоне, остаются на Диске.
-async function restoreDump(d, fromDisk) {
+async function restoreDump(d, fromDisk, enc) {
   if (!d || d.app !== 'master-zayavki' || !Array.isArray(d.orders)) throw new Error('Это не файл копии заявок');
   // 1. Проверяем всю копию, пока в телефоне ничего не тронуто
   const bad = (list, need) => !Array.isArray(list) || list.some((x) => !x || typeof x !== 'object' || need.some((k) => x[k] === undefined || x[k] === null || x[k] === ''));
@@ -381,7 +511,17 @@ async function restoreDump(d, fromDisk) {
     const local = await dbAll('photos');
     const byId = new Map(local.map((p) => [p.id, p]));
     const inDump = new Set(photos.map((p) => p.id));
-    const allPhotos = photos.map((p) => ({ ...p, blob: byId.get(p.id)?.blob || null }))
+    const allPhotos = photos.map(({ inlinePhoto, photoType, ...p }) => {
+      if (inlinePhoto !== undefined) {
+        if (typeof inlinePhoto !== 'string' || !inlinePhoto) throw new Error('Копия содержит повреждённое фото');
+        const blob = new Blob([fromBase64(inlinePhoto)], { type: photoType || 'image/jpeg' });
+        return { ...p, blob, blobRevision: uid(), uploaded: 0, remotePath: null };
+      }
+      const cached = byId.get(p.id);
+      const sameRevision = cached?.orderId === p.orderId && cached.blobRevision === p.blobRevision
+        && (p.blobRevision || !p.remotePath || cached.remotePath === p.remotePath);
+      return { ...p, blob: sameRevision ? cached.blob : null };
+    })
       .concat(local.filter((p) => !inDump.has(p.id)));
     const maxNum = d.orders.reduce((m, o) => Math.max(m, o.num || 0), 0);
     const v = ((await getMeta('dataVersion')) || 0) + 1;
@@ -390,6 +530,8 @@ async function restoreDump(d, fromDisk) {
     const meta = {
       nextNum: Math.max(d.nextNum || 1, maxNum + 1), dataVersion: v, repeatsMarked: null,
       pendingDeletes: (list) => (list || []).filter((x) => !live.has(_pendingDeletePath(x))),
+      photosNeedCheck: !fromDisk,
+      ...(await backupKeyMeta(enc)),
     };
     if (fromDisk) meta.syncedVersion = v;
     // 3. Заменяем данные и очередь фото одной операцией, пока отправка ждёт.

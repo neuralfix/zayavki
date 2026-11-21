@@ -6,6 +6,13 @@ const OCR_BASE = new URL('vendor/ocr/', location.href).href;
 const OCR_FILES = ['tesseract.min.js', 'worker.min.js', 'tesseract-core-simd-lstm.wasm.js', 'eng.traineddata.gz', 'rus.traineddata.gz'];
 let _ocrWorker = null;
 let _ocrProgress = null;
+let _localOcrQueue = Promise.resolve();
+
+function queueLocalOcr(read) {
+  const result = _localOcrQueue.then(read);
+  _localOcrQueue = result.catch(() => null);
+  return result;
+}
 
 function _loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -239,12 +246,18 @@ async function _jpegBase64(blob) {
   return c.toDataURL('image/jpeg', 0.88).split(',')[1];
 }
 
-async function cloudOcrText(blob, conf) {
+async function cloudOcrText(blob, conf, { signal, beforeSend } = {}) {
   const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 40000);
+  const abort = () => ctrl.abort();
+  signal?.addEventListener('abort', abort, { once: true });
   try {
+    signal?.throwIfAborted();
+    const image = await _jpegBase64(blob);
+    if (beforeSend && !(await beforeSend())) return null;
+    signal?.throwIfAborted();
     const r = await fetch(conf.url, { method: 'POST', signal: ctrl.signal,
       headers: { 'Content-Type': 'application/json', 'X-App-Key': conf.key },
-      body: JSON.stringify({ key: conf.key, image: await _jpegBase64(blob) }) });
+      body: JSON.stringify({ key: conf.key, image }) });
     const j = await r.json().catch(() => ({}));
     if (r.status === 403) {
       throw new Error('Неверный ключ: ' + (j.why || 'в приложении ' + conf.key.length + ' символов, сравните буква в букву с APP_KEY') +
@@ -253,29 +266,36 @@ async function cloudOcrText(blob, conf) {
     if (!r.ok) throw new Error(j.error ? 'Яндекс: ' + j.error + (j.detail ? ' — ' + j.detail.slice(0, 120) : '') : 'Яндекс ответил ошибкой ' + r.status);
     return j.text || (j.lines || []).join('\n');
   } catch (e) {
+    if (signal?.aborted) throw e;
     if (e.name === 'AbortError') throw new Error('Яндекс не ответил за 40 секунд');
     if (e instanceof TypeError) throw new Error('Нет связи с функцией в Яндексе: проверьте интернет и ссылку');
     throw e;
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
 }
 
 // Распознать фото. onStep(текст) — для надписи на кнопке.
 // Настроен Яндекс и есть интернет — читает Яндекс (точно). Иначе — прямо в телефоне (заметно хуже).
-async function readPlate(blob, onStep) {
+async function readPlate(blob, onStep, signal) {
   const conf = await ocrCloudConf();
+  signal?.throwIfAborted();
   if (conf && navigator.onLine) {
     onStep && onStep('Читаю через Яндекс…');
-    const r = plateCandidates(await cloudOcrText(blob, conf));
+    const r = plateCandidates(await cloudOcrText(blob, conf, { signal }));
+    signal?.throwIfAborted();
     r.source = 'cloud';
     return r;
   }
-  const r = await _readLocal(blob, onStep);
+  const r = await queueLocalOcr(() => _readLocal(blob, onStep, signal));
   r.note = conf ? 'Нет интернета — прочитано прямо в телефоне, проверьте внимательно.'
     : 'Прочитано прямо в телефоне — это неточно. Точное чтение через Яндекс включается в «Диск» → «Считывание шильдиков».';
   return r;
 }
 
-async function _readLocal(blob, onStep) {
+async function _readLocal(blob, onStep, signal) {
+  signal?.throwIfAborted();
   let pass = 0;
   _ocrProgress = (m) => {
     if (m.status === 'recognizing text') onStep && onStep('Читаю… ' + (pass > 1 ? '(' + pass + ') ' : '') + Math.round((m.progress || 0) * 100) + '%');
@@ -284,8 +304,10 @@ async function _readLocal(blob, onStep) {
   try {
     const w = await _getOcrWorker();
     const run = async (rot, mode) => {
+      signal?.throwIfAborted();
       pass++;
       const { data } = await w.recognize(await _plateCanvas(blob, rot, mode));
+      signal?.throwIfAborted();
       const r = plateCandidates(data.text);
       r.confidence = data.confidence; r.rot = rot;
       r.rank = data.confidence + (r.models.length ? 15 : 0) + (r.brand ? 5 : 0);
@@ -369,10 +391,20 @@ async function _autoPlate(orderId, photoIds, onStep) {
     const p = await dbGet('photos', pid);
     if (!p || !p.blob) continue;
     onStep && onStep('Ищу шильдик на фото…');
-    const v = await _screenLocal(p.blob);
+    const v = await queueLocalOcr(() => _screenLocal(p.blob));
     if (v.kind !== 'plate') continue;
+    // Настройки или фото могли измениться, пока телефон читал снимок или готовил его к отправке.
+    const maySend = async () => {
+      const [enabled, current, order, cfg] = await Promise.all([
+        getMeta('autoPlate'), dbGet('photos', pid), dbGet('orders', orderId), ocrCloudConf(),
+      ]);
+      return navigator.onLine && enabled !== false && current?.blob && current.orderId === orderId &&
+        current.blobRevision === p.blobRevision && order && !((order.model || '').trim() && order.device) &&
+        cfg?.url === conf.url && cfg.key === conf.key;
+    };
+    if (!(await maySend())) continue;
     onStep && onStep('Читаю шильдик…');
-    const text = await cloudOcrText(p.blob, conf);
+    const text = await cloudOcrText(p.blob, conf, { beforeSend: maySend });
     if (screenPlate(text).kind !== 'plate') continue;
     const r = plateCandidates(text);
     const sure = r.models.length && (r.brand || OCR_KEY.test(text) || OCR_TYPE_KEY.test(text));

@@ -17,6 +17,8 @@ async function deriveKey(password, salt, iter) {
 }
 
 async function getEnc() {
+  const current = await getMeta('encContext');
+  if (current) return current;
   const key = await getMeta('encKey');
   const salt = await getMeta('encSalt');
   const iter = await getMeta('encIter');
@@ -36,26 +38,34 @@ async function _rawEncrypt(key, salt, iter, plain) {
   return out;
 }
 
-// Запомнить ключ на этом телефоне. Проверочная запись нужна, чтобы потом проверить, помнит ли мастер пароль.
-async function _adoptKey(key, salt, iter) {
-  const prev = await getEnc();
-  await setMeta('encKey', key);
-  await setMeta('encSalt', salt);
-  await setMeta('encIter', iter);
-  await setMeta('encCheck', await _rawEncrypt(key, salt, iter, new TextEncoder().encode('ok')));
-  // Ключ сменился — то, что уже лежит на Диске, зашифровано старым. Отправим фото из телефона заново.
-  if (prev && !_same(prev.salt, salt)) {
-    for (const p of await dbAll('photos')) {
-      if (p.blob && p.uploaded) { p.uploaded = 0; await dbPut('photos', p); }
-    }
-    await markDirty();
-  }
+function _keyId(salt, iter) {
+  return iter + ':' + toBase64(salt);
+}
+
+async function matchesActiveBackupKey(enc) {
+  const active = await getEnc();
+  return !!(active && enc && _keyId(active.salt, active.iter) === _keyId(enc.salt, enc.iter));
+}
+
+// Ключ копии запоминаем только при восстановлении. У уже настроенного телефона пароль не меняется.
+async function backupKeyMeta(enc) {
+  if (!enc) return {};
+  const active = await getEnc();
+  if (!active) return _activeKeyMeta(enc);
+  const id = _keyId(enc.salt, enc.iter);
+  if (id === _keyId(active.salt, active.iter)) return {};
+  return { backupKeys: (keys) => ({ ...keys, [id]: enc.key }) };
+}
+
+async function _activeKeyMeta(enc) {
+  const check = await _rawEncrypt(enc.key, enc.salt, enc.iter, new TextEncoder().encode('ok'));
+  return { encContext: enc, encCheck: check };
 }
 
 async function setPassword(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await deriveKey(password, salt, ENC_ITER);
-  await _adoptKey(key, salt, ENC_ITER);
+  await setMetaEntries(await _activeKeyMeta({ key, salt, iter: ENC_ITER }));
 }
 
 async function checkPassword(password) {
@@ -68,8 +78,8 @@ async function checkPassword(password) {
 }
 
 // data: Blob, строка или байты. Возвращает зашифрованные байты (Uint8Array).
-async function encryptBytes(data) {
-  const enc = await getEnc();
+async function encryptBytes(data, fallbackKey) {
+  const enc = await getEnc() || fallbackKey;
   if (!enc) throw new Error('Не задан пароль для шифрования');
   const plain = typeof data === 'string' ? new TextEncoder().encode(data)
     : (data instanceof Blob ? await data.arrayBuffer() : data);
@@ -85,31 +95,32 @@ function encInfo(bytes) {
   };
 }
 
-function _same(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-// Расшифровать. Если копия сделана с другим паролем (или на этом телефоне пароля ещё нет),
-// спрашивает пароль через askPassword(номерПопытки). Подошедший пароль становится паролем этого телефона.
-async function decryptBytes(bytes, askPassword) {
+// Чтение копии или снимка само по себе не меняет ключи телефона.
+async function decryptWithKey(bytes, askPassword) {
   const info = encInfo(bytes);
   if (!info) throw new Error('Файл не похож на копию из приложения');
-  const enc = await getEnc();
-  if (enc && _same(enc.salt, info.salt)) {
-    try { return await crypto.subtle.decrypt({ name: 'AES-GCM', iv: info.iv }, enc.key, info.ct); } catch (e) { /* спросим пароль */ }
+  const current = await getEnc();
+  const remembered = await getMeta('backupKeys');
+  const id = _keyId(info.salt, info.iter);
+  const key = current && id === _keyId(current.salt, current.iter) ? current.key : remembered?.[id];
+  const unpack = async (key) => ({
+    plain: await crypto.subtle.decrypt({ name: 'AES-GCM', iv: info.iv }, key, info.ct),
+    enc: { key, salt: info.salt, iter: info.iter },
+  });
+  if (key) {
+    try { return await unpack(key); } catch (e) { /* спросим пароль */ }
   }
   if (!askPassword) throw new WrongPassword('Зашифровано другим паролем');
   for (let attempt = 0; ; attempt++) {
     const pw = await askPassword(attempt);
     if (pw == null) throw new Error('Отменено');
-    const key = await deriveKey(pw, info.salt, info.iter);
-    let plain;
-    try { plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: info.iv }, key, info.ct); } catch (e) { continue; }
-    await _adoptKey(key, info.salt, info.iter);
-    return plain;
+    const candidate = await deriveKey(pw, info.salt, info.iter);
+    try { return await unpack(candidate); } catch (e) { /* спросим ещё раз */ }
   }
+}
+
+async function decryptBytes(bytes, askPassword) {
+  return (await decryptWithKey(bytes, askPassword)).plain;
 }
 
 function toBase64(u8) {
