@@ -24,7 +24,8 @@ norm = lambda s: re.sub(r'[^0-9a-zа-я]+', ' ', (s or '').lower().replace('ё',
 
 
 def street_key(s):
-    return ' '.join(t for t in norm(s).split(' ') if t and t not in TYPE_WORDS)
+    value = re.sub(r'^\s*пр[-–—](?:кт|т)\.?(?=\s|$)', 'проспект', s or '', flags=re.I)
+    return ' '.join(t for t in norm(value).split(' ') if t and t not in TYPE_WORDS)
 
 
 def house_key(h):

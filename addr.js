@@ -9,7 +9,8 @@ let _districtPlaces = null;
 let _streetsLoading = null;
 
 const _norm = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^0-9a-zа-я]+/g, ' ').trim();
-const _labelKey = (s) => s.toLowerCase().replace(/\s*,\s*/g, ', ').trim();
+const _normalizeAvenue = (s) => String(s || '').replace(/(^\s*|,\s*)(?:пр[-–—](?:кт|т)|проспект)\.?(?=\s|$)/gi, '$1проспект');
+const _labelKey = (s) => _normalizeAvenue(s).toLowerCase().replace(/\s*,\s*/g, ', ').trim();
 // Слова, которые не ищем: тип улицы. «ул лен» и «лен» находят одно и то же.
 const _TYPE_WORDS = new Set(['ул', 'улица', 'пр', 'пр-т', 'просп', 'проспект', 'пер', 'переулок', 'б', 'р', 'б-р', 'бульвар',
   'пр-д', 'проезд', 'ш', 'шоссе', 'туп', 'тупик', 'пл', 'площадь', 'наб', 'набережная', 'мкр', 'микрорайон', 'д', 'дом',
@@ -73,7 +74,7 @@ function loadStreets() {
 }
 
 function _tokens(q) {
-  return _norm(q).split(' ').filter((t) => t && !_TYPE_WORDS.has(t));
+  return _norm(_normalizeAvenue(q)).split(' ').filter((t) => t && !_TYPE_WORDS.has(t));
 }
 // Все слова запроса — начала слов в строке
 function _matches(key, toks) {
@@ -93,7 +94,7 @@ function _splitKnownStreet(value) {
 }
 
 function mapsAddress(address) {
-  const value = String(address || '').trim();
+  const value = _normalizeAvenue(address).trim();
   if (!value || /^(?:уфа|уфимский\s+(?:район|р-н))(?=[\s,]|$)|^(?:г\.|город)\s*[а-яё]/i.test(value)) return value;
   const [head, next = ''] = value.split(',', 2).map((part) => part.trim());
   const streetType = /^(?:ул|улица|пр|пр-т|проспект|пер|переулок|б-р|бульвар|ш|шоссе|туп|пл|наб|мкр)(?=[\s.]|$)/i;
@@ -110,13 +111,14 @@ function _houseSort(a, b) {
 }
 
 // Свои прошлые заявки по этому адресу — по квартирам: «Ленина 12, кв. 5 · Иванов · холодильник · №386».
-// history — заявки, свежие первыми. match(ключ адреса) — подходит ли адрес.
+// history — заявки, свежие первыми. match получает ключ поиска и точный ключ дома.
 function _flatSuggestions(history, match, max) {
   const out = []; const seen = new Set();
   for (const o of history) {
-    const key = ' ' + _norm(o.address);
-    if (!match(key)) continue;
-    const flat = (orderAddressKey(o.address) || key) + '|' + (orderApartmentKey(o.apt) || _norm(o.apt));
+    const key = ' ' + _norm(_normalizeAvenue(o.address));
+    const house = orderAddressKey(o.address);
+    if (!match(key, house)) continue;
+    const flat = (house || key) + '|' + (orderApartmentKey(o.apt) || _norm(o.apt));
     if (seen.has(flat)) continue;
     seen.add(flat);
     out.push({ text: o.address + (o.apt ? ', кв. ' + o.apt : ''), value: o.address, kind: 'history', order: o,
@@ -136,8 +138,10 @@ async function addressSuggestions(value, history) {
   // Улица уже выбрана — сначала квартиры, где уже были, потом дома
   const known = _splitKnownStreet(v);
   if (known && !known.rest.includes(',')) {
-    const nv = ' ' + _norm(v);
-    const flats = _norm(known.rest) ? _flatSuggestions(history, (k) => k === nv || k.startsWith(nv + ' '), 6) : [];
+    const nv = ' ' + _norm(_normalizeAvenue(v));
+    const house = orderAddressKey(v);
+    const flats = _norm(known.rest) ? _flatSuggestions(history,
+      (k, candidate) => (house && house === candidate) || k === nv || k.startsWith(nv + ' '), 6) : [];
     const q = _norm(known.rest).replace(/^(д|дом)\s*/, '').replace(/\s+/g, '');
     const hs = known.street.houses.filter((h) => _norm(h).replace(/\s+/g, '').startsWith(q)).sort(_houseSort);
     if (q && hs.length === 1 && _norm(hs[0]).replace(/\s+/g, '') === q) return flats; // дом уже дописан
@@ -255,7 +259,7 @@ const _ORDER_STREET_PREFIX = /^(ул|улица|пр-т|просп|проспе�
 const _orderKeyText = (value) => value.toLowerCase().replace(/ё/g, 'е').replace(/[–—]/g, '-').replace(/\./g, '').replace(/\s+/g, ' ').trim();
 
 function _orderHouseParts(address) {
-  const v = String(address || '').trim();
+  const v = _normalizeAvenue(address).trim();
   const m = v.match(_ORDER_HOUSE_END);
   if (!m) return null;
   const parts = v.slice(0, m.index).split(',').map((part) => part.trim()).filter(Boolean);
