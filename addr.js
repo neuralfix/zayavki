@@ -258,7 +258,7 @@ const _ORDER_HOUSE_TYPES = { корпус: 'к', корп: 'к', строени�
 const _ORDER_STREET_PREFIX = /^(ул|улица|пр-т|просп|проспект|пер|переулок|б-р|бульвар|пр-д|проезд|ш|шоссе|туп|тупик|пл|площадь|наб|набережная|мкр|микрорайон|кв-л|квартал|тракт|аллея|линия|тер|спуск|въезд)\.?(?=\s)\s*/i;
 const _orderKeyText = (value) => value.toLowerCase().replace(/ё/g, 'е').replace(/[–—]/g, '-').replace(/\./g, '').replace(/\s+/g, ' ').trim();
 
-function _orderHouseParts(address) {
+function _orderHouseParts(address, defaultPlace = 'уфа') {
   const v = _normalizeAvenue(address).trim();
   const m = v.match(_ORDER_HOUSE_END);
   if (!m) return null;
@@ -268,7 +268,7 @@ function _orderHouseParts(address) {
   const place = parts.map((part) => _orderKeyText(part).replace(/^(?:г|город)\s+/, '')).join(', ');
   const house = _orderKeyText(m[1]).replace(/корпус|корп|строение|стр|литера/g, (type) => _ORDER_HOUSE_TYPES[type])
     .replace(/[,\s]+/g, '');
-  return { street, place: place || 'уфа', house };
+  return { street, place: place || defaultPlace, house };
 }
 
 // Ключ истории сохраняет населённый пункт и разделители номера дома: 12/1, 12-1 и 12 к1 — разные адреса.
@@ -294,6 +294,42 @@ const _entrRecorded = (matches, field) => _entrSame(matches.map((s) => s[field])
 function orderApartmentKey(value) {
   const m = String(value ?? '').trim().match(/^([0-9]+)\s*([а-яёa-z]?)$/i);
   return m && Number.isSafeInteger(+m[1]) && +m[1] > 0 ? String(+m[1]) + m[2].toLowerCase() : null;
+}
+
+// Сокращения после города должны распознаваться и без запятой.
+const orderSearchTerms = (value) => _tokens(String(value ?? '')
+  .replace(/(^|[\s,])(?:пр[-–—](?:кт|т|д)|б[-–—]р|кв[-–—]л)\.?(?=[\s,]|$)/gi, '$1'));
+
+function orderSearchAddress(value, defaultPlace = '') {
+  const text = String(value ?? '').trim().replace(/[.,\s]+$/, '');
+  const apartment = text.match(/[\s,]+(?:кв|квартира)\.?\s*(\d+\s*[а-яёa-z]?)$/i);
+  const parts = _orderHouseParts(apartment ? text.slice(0, apartment.index) : text, '');
+  if (!parts) return null;
+  const street = orderSearchTerms(parts.street);
+  if (!street.length) return null;
+  // «Миловка ул. Центральная» уже содержит населённый пункт, даже без запятой.
+  const hasLocality = /^(?:г|город|с|село|д|деревня|пос|пос[её]лок)(?=[.\s])/i.test(parts.street) ||
+    /\s(?:ул|улица|пр|пр[-–—](?:кт|т|д)|проспект|пер|переулок|б-р|бульвар|проезд|шоссе|площадь|набережная|мкр|микрорайон)(?=[.\s])/i.test(parts.street);
+  const place = parts.place || (hasLocality ? '' : defaultPlace);
+  return {
+    terms: [...orderSearchTerms(place), ...street],
+    house: parts.house,
+    apartment: apartment ? orderApartmentKey(apartment[1]) : null,
+  };
+}
+
+function orderSearchQueries(text) {
+  const address = orderSearchAddress(text);
+  const queries = address ? [address] : [];
+  if (address?.apartment) return queries;
+
+  // «Улица 8 23» также может означать дом 8, квартиру 23.
+  const tail = text.match(/[\s,]+(\d+\s*[а-яёa-z]?)$/i);
+  if (!tail) return queries;
+  const apartment = orderApartmentKey(tail[1]);
+  const house = apartment && orderSearchAddress(text.slice(0, tail.index));
+  if (house && !house.apartment) queries.push({ ...house, apartment });
+  return queries;
 }
 
 // { entrance, floor, src, estimated } — при противоречиях оставляем поле пустым.

@@ -56,7 +56,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.42'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.43'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -211,10 +211,27 @@ const kindTag = (o) => (o.isWarranty ? ' <span class="tag-w">гарантия</s
 const warrantyText = (o) => o.warrantyMonths ? o.warrantyMonths + ' ' + plural(o.warrantyMonths, 'месяц', 'месяца', 'месяцев')
   : o.warrantyDays ? o.warrantyDays + ' ' + daysWord(o.warrantyDays) : '';
 
-function matches(o, q) {
+function matches(o, q, addressQueries, addressTerms) {
   if (!q) return true;
-  const text = [o.num, o.name, o.phone, o.address, o.apt, o.device, o.model, o.problem, o.notes, o.workDone, o.sd?.what, o.problemClient].join(' ').toLowerCase();
+  const byAddress = addressQueries.length > 0;
+  if (byAddress) {
+    const address = orderSearchAddress(o.address, 'уфа');
+    if (address) {
+      const addressText = ' ' + address.terms.join(' ');
+      const apartment = orderApartmentKey(o.apt) || address.apartment;
+      if (addressQueries.some((query) => address.house === query.house &&
+        _matches(addressText, query.terms) && (!query.apartment || query.apartment === apartment))) return true;
+    }
+  }
+  const text = [o.num, o.name, o.phone, byAddress ? '' : o.address, o.apt,
+    o.device, o.model, o.problem, o.notes, o.workDone, o.sd?.what, o.problemClient].join(' ').toLowerCase();
   if (text.includes(q)) return true;
+  if (addressTerms.length) {
+    const terms = orderSearchAddress(o.address, 'уфа')?.terms || orderSearchTerms(o.address);
+    if (_matches(' ' + terms.join(' '), addressTerms)) return true;
+  }
+  // Номер дома в адресном запросе не должен срабатывать как часть телефона.
+  if (byAddress) return false;
   const dq = digits(q);
   if (dq.length < 3) return false;
   const tel = digits(o.phone);
@@ -245,8 +262,10 @@ async function renderOrders() {
 
 function drawList(all) {
   const q = state.search.trim().toLowerCase();
+  const addressQueries = orderSearchQueries(q);
+  const addressTerms = !addressQueries.length && /[а-яёa-z]/i.test(q) ? orderSearchTerms(q) : [];
   const f = state.filter;
-  let list = all.filter((o) => (f === 'all' || (f === 'war' ? inWarrantyTab(o) : f === 'closed' ? !isActive(o.status) : o.status === f)) && matches(o, q));
+  let list = all.filter((o) => (f === 'all' || (f === 'war' ? inWarrantyTab(o) : f === 'closed' ? !isActive(o.status) : o.status === f)) && matches(o, q, addressQueries, addressTerms));
   // В работе: сначала с назначенным временем (по порядку), потом без времени — новые сверху.
   // На СД: давние сверху. Закрытые, отказы, отмены: свежие сверху. «Все» — в таком же порядке группами.
   const rank = (o) => (o.status === 'open' ? 0 : o.status === 'sd' ? 1 : 2);
