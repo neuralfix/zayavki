@@ -56,7 +56,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.44'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.45'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -400,6 +400,67 @@ function readOrderDraft() {
   try { return JSON.parse(localStorage.getItem(ORDER_DRAFT_KEY)) || {}; } catch (e) { return {}; }
 }
 
+function pickVisitDay(value) {
+  const monday = new Date();
+  const year = monday.getFullYear();
+  monday.setHours(12, 0, 0, 0);
+  monday.setDate(monday.getDate() - (monday.getDay() + 6) % 7);
+  const week = (offset) => Array.from({ length: 7 }, (_, i) =>
+    new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offset * 7 + i, 12));
+  return formDialog('Выбрать день недели', `
+    <div class="seg visit-weeks" role="group" aria-label="Неделя">
+      <button type="button" data-visit-week="0">Эта неделя</button>
+      <button type="button" data-visit-week="1">Следующая неделя</button>
+    </div>
+    <div class="visit-week-days" role="group" aria-label="Дни недели"></div>
+    <input type="hidden" name="date" value="${esc(value.slice(0, 10))}">
+    <p class="visit-date-caption" aria-live="polite"></p>
+    <div class="field">
+      <label for="visitTimeChoice">Время выезда</label>
+      <input class="input" id="visitTimeChoice" name="time" type="time" value="${esc(value.slice(11))}" required>
+    </div>`, (dialog) => {
+    dialog.classList.add('visit-picker');
+    const date = $('[name=date]', dialog);
+    const time = $('[name=time]', dialog);
+    const summary = $('.visit-date-caption', dialog);
+    const days = $('.visit-week-days', dialog);
+    const weeks = $$('[data-visit-week]', dialog);
+    const submit = $('[type=submit]', dialog);
+    const updateSelection = () => {
+      const selected = date.value && new Date(date.value + 'T12:00');
+      summary.textContent = selected
+        ? visitDayText(selected, selected.getFullYear() !== year)
+        : 'Выберите день';
+      submit.disabled = !selected || !time.value;
+      $$('[data-visit-date]', days).forEach((button) =>
+        button.setAttribute('aria-pressed', String(button.dataset.visitDate === date.value)));
+    };
+    const showWeek = (offset) => {
+      weeks.forEach((button) => {
+        const current = Number(button.dataset.visitWeek) === offset;
+        button.classList.toggle('on', current);
+        button.setAttribute('aria-pressed', String(current));
+      });
+      days.innerHTML = week(offset).map((day) => `
+        <button type="button" data-visit-date="${toDateInput(day)}" aria-label="${visitDayText(day, day.getFullYear() !== year)}">
+          <span>${day.toLocaleDateString('ru-RU', { weekday: 'short' })}</span>
+          <span>${day.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })}</span>
+        </button>`).join('');
+      updateSelection();
+    };
+    weeks.forEach((button) => button.onclick = () => showWeek(Number(button.dataset.visitWeek)));
+    days.onclick = (event) => {
+      const button = event.target.closest('[data-visit-date]');
+      if (!button) return;
+      date.value = button.dataset.visitDate;
+      updateSelection();
+    };
+    time.addEventListener('input', updateSelection);
+    time.addEventListener('change', updateSelection);
+    showWeek(week(1).some((day) => toDateInput(day) === date.value) ? 1 : 0);
+  }, 'Подставить дату');
+}
+
 async function renderOrderForm(id, warrantyFromId) {
   const o = id ? await dbGet('orders', id) : null;
   if (id && !o) return go('#/orders', true);
@@ -421,7 +482,9 @@ async function renderOrderForm(id, warrantyFromId) {
       <div class="field"><label for="orderProblem">${o ? 'Проблема' : 'Что сломалось'}</label><textarea class="input" id="orderProblem" name="problem">${esc(v.problem)}</textarea></div>`;
   const visitField = `
       <div class="field"><label for="orderVisit">Когда ехать${o ? ' <span class="muted">— если клиент просит на время или на другой день</span>' : ''}</label>
-        <input class="input" id="orderVisit" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}">
+        <input class="input" id="orderVisit" name="visitAt" type="datetime-local" value="${toDTInput(v.visitAt)}" aria-describedby="visitWeekday">
+        <p class="visit-date-caption" id="visitWeekday" aria-live="polite" hidden></p>
+        <button type="button" class="link visit-week-link" id="pickVisitDay">Выбрать по дню недели</button>
         <div id="conflicts"></div></div>`;
   const phoneField = `
       <div class="field"><label for="orderPhone">Телефон</label>
@@ -603,9 +666,23 @@ async function renderOrderForm(id, warrantyFromId) {
       ${list.map((x) => `<div>${x.near ? '⚠ ' : ''}${new Date(x.o.visitAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} — ${esc(shortAddress(x.o) || x.o.name || '№' + x.o.num)}${x.o.device ? ' · ' + esc(x.o.device.toLowerCase()) : ''}${x.near ? ' <b>— близко по времени</b>' : ''}</div>`).join('')}
     </div>` : '';
   };
-  visitIn.addEventListener('change', showConflicts);
-  visitIn.addEventListener('input', showConflicts);
-  if (v.visitAt) showConflicts();
+  const weekdayHint = $('#visitWeekday', form);
+  const updateVisit = () => {
+    const visit = visitIn.value && new Date(visitIn.value);
+    weekdayHint.hidden = !visit;
+    weekdayHint.textContent = visit ? visitDayText(visit, visit.getFullYear() !== new Date().getFullYear()) : '';
+    showConflicts();
+  };
+  visitIn.addEventListener('change', updateVisit);
+  visitIn.addEventListener('input', updateVisit);
+  if (visitIn.value) updateVisit();
+  $('#pickVisitDay', form).onclick = async () => {
+    if (saving) return;
+    const picked = await pickVisitDay(visitIn.value);
+    if (!picked?.date || !picked.time || !form.isConnected || saving) return;
+    visitIn.value = picked.date + 'T' + picked.time;
+    visitIn.dispatchEvent(new Event('change', { bubbles: true }));
+  };
 
   // Клиент уже был / проблемный / на гарантии
   const phoneIn = $('[name=phone]'); const hint = $('#client');
@@ -785,7 +862,7 @@ async function renderOrderForm(id, warrantyFromId) {
       setAddrMore();
       saveDraft();
       if (parsed.phone) showClient();
-      if (parsed.visitAt) showConflicts();
+      if (parsed.visitAt) updateVisit();
       toast('Заполнено из сообщения — проверьте поля', 4000);
     } finally {
       po.disabled = false;
@@ -839,8 +916,9 @@ function formDialog(title, html, onOpen, submitLabel = 'Готово') {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     d.className = 'pw';
+    d.setAttribute('aria-label', title);
     d.innerHTML = `<form><h3>${esc(title)}</h3>${html}
-      <div class="btns"><button type="button" class="btn sec" data-a="no">Отмена</button><button class="btn">${esc(submitLabel)}</button></div></form>`;
+      <div class="btns"><button type="button" class="btn sec" data-a="no">Отмена</button><button type="submit" class="btn">${esc(submitLabel)}</button></div></form>`;
     document.body.appendChild(d);
     const f = $('form', d);
     const done = (val) => { d.close(); d.remove(); resolve(val); };

@@ -194,6 +194,21 @@ details.tg pre { white-space: pre-wrap; word-break: break-word; font: 14px/1.45 
 .input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 textarea.input { min-height: 72px; resize: vertical; }
 .input.big { font-size: 24px; font-weight: 650; }
+.visit-date-caption { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+.visit-week-link { min-height: 44px; font-size: 14px; text-align: left; }
+.visit-weeks button { min-height: 40px; }
+.visit-week-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.visit-week-days button {
+  min-height: 52px; padding: 4px 0; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); font-size: 14px; font-weight: 650;
+}
+.visit-week-days button span { display: block; }
+.visit-week-days button span:first-child { text-transform: capitalize; }
+.visit-week-days button span:last-child { color: var(--muted); font-size: 11px; }
+.visit-week-days button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-2); color: var(--accent); }
+.visit-picker .visit-date-caption { margin: 10px 0; }
+.seg.visit-weeks button.on { color: var(--bg); }
+.visit-picker .btn:disabled { opacity: .45; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 12px; font-size: 14px;
