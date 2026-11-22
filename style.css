@@ -195,8 +195,9 @@ details.tg pre { white-space: pre-wrap; word-break: break-word; font: 14px/1.45 
 textarea.input { min-height: 72px; resize: vertical; }
 .input.big { font-size: 24px; font-weight: 650; }
 .visit-date-caption { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
-.visit-week-link { min-height: 44px; font-size: 14px; text-align: left; }
-.visit-weeks button { min-height: 40px; }
+.visit-weeks { margin-bottom: 6px; }
+.visit-weeks button { min-height: 44px; }
+.visit-weeks button:last-child { flex: 0 0 44px; font-size: 22px; }
 .visit-week-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .visit-week-days button {
   min-height: 52px; padding: 4px 0; border: 1px solid var(--line); border-radius: 8px;
@@ -206,9 +207,13 @@ textarea.input { min-height: 72px; resize: vertical; }
 .visit-week-days button span:first-child { text-transform: capitalize; }
 .visit-week-days button span:last-child { color: var(--muted); font-size: 11px; }
 .visit-week-days button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-2); color: var(--accent); }
-.visit-picker .visit-date-caption { margin: 10px 0; }
+.visit-date-selection { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
+.visit-date-selection .visit-date-caption { margin: 4px 0; }
+.visit-time-field { margin-top: 4px; }
+.visit-time-row { display: flex; align-items: center; gap: 10px; }
+.visit-time-row input { width: auto; min-width: 116px; }
+.visit-picker .link { min-height: 36px; }
 .seg.visit-weeks button.on { color: var(--bg); }
-.visit-picker .btn:disabled { opacity: .45; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 7px 12px; font-size: 14px;
