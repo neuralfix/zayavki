@@ -56,7 +56,7 @@ const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся р
 const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.43'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.44'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -292,8 +292,15 @@ function drawList(all) {
   }).join('');
 }
 
-// ================= СЕГОДНЯ =================
+// ================= АКТУАЛЬНЫЕ ЗАЯВКИ =================
 const hhmm = (ts) => new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+function visitDayText(ts, withYear) {
+  const options = { weekday: 'long', month: 'long', day: 'numeric' };
+  if (withYear) options.year = 'numeric';
+  const text = new Date(ts).toLocaleDateString('ru-RU', options);
+  return text[0].toUpperCase() + text.slice(1);
+}
 
 const ICON_CALL = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M6.6 3.5l2.6-.3 1.6 4-2 1.5a12 12 0 0 0 6.5 6.5l1.5-2 4 1.6-.3 2.6c-.2 1.3-1.3 2.2-2.6 2.1C10.6 19 5 13.4 4.5 6.1c-.1-1.3.8-2.4 2.1-2.6z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
 const ICON_ROUTE = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 2.5l7.5 18-7.5-4-7.5 4z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>';
@@ -320,32 +327,59 @@ function todayItem(o, timeText) {
   </div>`;
 }
 
+function groupOpenOrders(all, now) {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+  const today = [], undated = [], late = [], upcoming = new Map();
+  const dated = [];
+  for (const order of all) {
+    if (order.status !== 'open') continue;
+    const time = new Date(Number(order.visitAt)).getTime();
+    if (time > 0) dated.push({ order, time });
+    else undated.push({ order, time: null });
+  }
+  undated.sort((a, b) => b.order.createdAt - a.order.createdAt);
+  dated.sort((a, b) => a.time - b.time);
+  for (const visit of dated) {
+    if (visit.time < start) late.push(visit);
+    else if (visit.time < end) today.push(visit);
+    else {
+      const day = toDateInput(visit.time);
+      if (!upcoming.has(day)) upcoming.set(day, []);
+      upcoming.get(day).push(visit);
+    }
+  }
+  return { today, undated, late, upcoming };
+}
+
 async function renderToday() {
-  setTitle('Сегодня');
+  const hash = location.hash;
+  setTitle('Актуальные');
   const all = await dbAll('orders');
-  const n = new Date();
-  const start = new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime();
-  const end = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1).getTime();
-  const end2 = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 2).getTime();
-  const open = all.filter((o) => o.status === 'open');
-  const byTime = (a, b) => a.visitAt - b.visitAt;
-  const late = open.filter((o) => o.visitAt && o.visitAt < start).sort(byTime);
-  const today = open.filter((o) => o.visitAt >= start && o.visitAt < end).sort(byTime);
-  const noTime = open.filter((o) => !o.visitAt).sort((a, b) => b.createdAt - a.createdAt);
-  const tomorrow = open.filter((o) => o.visitAt >= end && o.visitAt < end2).sort(byTime);
+  if (location.hash !== hash) return;
+  const now = new Date();
+  const { today, undated, late, upcoming } = groupOpenOrders(all, now);
   const sd = all.filter((o) => o.status === 'sd').length;
   const sdOld = all.filter(sdLate).length;
-  const sec = (title, list, t, cls = '') => list.length ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>
-    <div class="list">${list.map((o) => todayItem(o, t(o))).join('')}</div>` : '';
+  const cards = (visits, timeText) => `<div class="list">${visits.map(({ order, time }) =>
+    todayItem(order, time === null ? '' : timeText(time))).join('')}</div>`;
+  const sec = (title, list, timeText = hhmm, cls = '') => list.length
+    ? `<h3 class="sec-h ${cls}">${title} <span class="muted">${list.length}</span></h3>${cards(list, timeText)}` : '';
+  const hasOpenOrders = today.length + undated.length + late.length + upcoming.size > 0;
+  const futureDays = Array.from(upcoming.values(), (visits) => {
+    const first = visits[0].time;
+    const title = visitDayText(first, new Date(first).getFullYear() !== now.getFullYear());
+    return `<h4 class="visit-day">${esc(title)}</h4>${cards(visits, hhmm)}`;
+  }).join('');
   view.innerHTML = `
-    <div class="today-head"><h2 id="todayDate">${esc(todayDateText())}</h2></div>
+    <div class="today-head"><h2 id="todayDate" data-day="${toDateInput(now)}">${esc(visitDayText(now))}</h2></div>
     <a class="fab" href="#/new" aria-label="Новая заявка">+</a>
+    ${hasOpenOrders ? (sec('На сегодня', today) || '<h3 class="sec-h">На сегодня</h3><p class="today-empty muted">Выездов на сегодня нет.</p>')
+      : '<div class="empty">Открытых заявок нет.</div>'}
+    ${sec('Без даты', undated)}
+    ${sec('Просрочено', late, (time) => dayShort(time) + ', ' + hhmm(time), 'neg')}
+    ${futureDays ? `<h3 class="sec-h">Запланировано</h3>${futureDays}` : ''}
     ${sd ? `<a class="item sd-link${sdOld ? ' late' : ''}" href="#/orders" id="toSd">🔧 На СД: ${sd}${sdOld ? ` <span class="neg">· ⚠ ${sdOld} ${sdOld === 1 ? 'ждёт' : 'ждут'} больше недели</span>` : ''}</a>` : ''}
-    ${sec('Просрочено', late, (o) => dayShort(o.visitAt) + ', ' + hhmm(o.visitAt), 'neg')}
-    ${sec('На сегодня', today, (o) => hhmm(o.visitAt))}
-    ${sec('Без времени', noTime, () => '')}
-    ${!late.length && !today.length && !noTime.length ? '<div class="empty">На сегодня заявок нет.<br>Новая заявка — кнопка «+» внизу.</div>' : ''}
-    ${sec('Завтра', tomorrow, (o) => hhmm(o.visitAt))}
     <div class="fab-space"></div>`;
   const toSd = $('#toSd'); if (toSd) toSd.onclick = () => { state.filter = 'sd'; };
 }
@@ -2247,13 +2281,13 @@ async function autoUpdateStreets() {
 }
 
 // Дата и время в шапке: «вт 17.11 · 14:35»
-const todayDateText = () => { const t = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }); return t[0].toUpperCase() + t.slice(1); };
 function tickClock() {
   const d = new Date();
   // дата и время на всех экранах — двумя строчками, чтобы заголовок не обрезался
   $('#clock').innerHTML = '<span class="c-d">' + d.toLocaleDateString('ru-RU', { weekday: 'short' }) + ' ' +
     String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '</span><span class="c-t">' + hhmm(d) + '</span>';
-  const td = $('#todayDate'); if (td) td.textContent = todayDateText();
+  const td = $('#todayDate');
+  if (td && td.dataset.day !== toDateInput(d) && (location.hash || '#/today').split('/')[1] === 'today') route();
 }
 
 // Номера в старых заявках (и после восстановления копии) — к виду +7 (965) 932-45-76
@@ -2309,7 +2343,7 @@ async function start() {
   setTimeout(autoUpdateStreets, 30 * 1000); // не мешать запуску
   await handleOAuthReturn();
   window.addEventListener('hashchange', route);
-  // Запуск с ярлыка (старый ярлык открывал «Заявки») — начинаем с «Сегодня»
+  // Запуск с ярлыка (старый ярлык открывал «Заявки») — начинаем с актуальных заявок
   if (history.length <= 1 && (!location.hash || location.hash === '#/orders')) history.replaceState(null, '', location.pathname + '#/today');
   await route();
   updateSyncBadge();
@@ -2336,7 +2370,11 @@ async function start() {
   };
   window.addEventListener('online', () => { updateSyncBadge(); requestSync(); });
   window.addEventListener('offline', updateSyncBadge);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) { requestSync(); checkUpdateBanner(); autoUpdateStreets(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    tickClock();
+    if (navigator.onLine) { requestSync(); checkUpdateBanner(); autoUpdateStreets(); }
+  });
   window.addEventListener('online', () => { checkUpdateBanner(); autoUpdateStreets(); });
   setInterval(() => { if (navigator.onLine) syncNow().then(updateSyncBadge); }, 5 * 60 * 1000);
   if (navigator.onLine) requestSync();
