@@ -1,13 +1,18 @@
 // Фоновая часть: держит приложение в телефоне для работы без связи
 // и отправляет данные на Диск, когда появляется интернет (даже если приложение закрыто).
 'use strict';
-importScripts('db.js', 'crypto.js', 'sync.js');
-
-// При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в app.js.
-const CACHE = 'zayavki-v47';
+// При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в assets/js/app.js.
+const CACHE = 'zayavki-v48';
 const OCR_CACHE = 'zayavki-ocr-v1'; // распознавание шильдика: большие файлы, не перекачиваются при обновлении
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'db.js', 'crypto.js', 'sync.js', 'addr.js', 'ocr.js', 'parse.js', 'streets.json', 'entrances.json', 'manifest.webmanifest',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
+const SHARED_SCRIPTS = ['assets/js/db.js', 'assets/js/crypto.js', 'assets/js/sync.js'];
+importScripts(...SHARED_SCRIPTS);
+
+const SHELL = [
+  './', 'index.html', 'assets/css/style.css', ...SHARED_SCRIPTS,
+  'assets/js/addr.js', 'assets/js/ocr.js', 'assets/js/parse.js', 'assets/js/app.js',
+  'streets.json', 'entrances.json', 'manifest.webmanifest',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png',
+];
 
 self.addEventListener('install', (e) => {
   // cache: 'reload' — берём файлы с сервера, а не из кэша браузера, чтобы не застрять на старой версии
