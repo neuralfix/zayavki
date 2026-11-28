@@ -55,7 +55,7 @@ const EXP_CATS = ['Реклама', 'Колибри', 'Прочее'];
 const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся раз в месяц — выбирается месяц, а не дата
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.48'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.49'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -71,7 +71,8 @@ function monthName(key, short) {
 function fmtDate(ts, time = true) {
   if (!ts) return '';
   const d = new Date(ts);
-  const today = new Date(); const yest = new Date(Date.now() - 864e5);
+  const today = new Date(); const yest = new Date(today);
+  yest.setDate(yest.getDate() - 1);
   let day = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
   if (d.toDateString() === today.toDateString()) day = 'сегодня';
   else if (d.toDateString() === yest.toDateString()) day = 'вчера';
@@ -265,8 +266,10 @@ function matches(o, q, addressQueries, addressTerms) {
 }
 
 async function renderOrders() {
-  setTitle('Заявки');
+  const hash = location.hash;
   const all = await dbAll('orders');
+  if (location.hash !== hash) return;
+  setTitle('Заявки');
   const cnt = { open: 0, sd: 0, closed: 0, war: 0 };
   all.forEach((o) => { if (o.status === 'open') cnt.open++; else if (o.status === 'sd') cnt.sd++; else cnt.closed++; if (inWarrantyTab(o)) cnt.war++; });
   view.innerHTML = `
@@ -297,22 +300,64 @@ function drawList(all) {
     : rank(a) === 1 ? (a.sd?.at || 0) - (b.sd?.at || 0)
       : (b.closedAt || b.createdAt) - (a.closedAt || a.createdAt)));
   const el = $('#list');
-  if (!list.length) {
-    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : f === 'war' ? 'Гарантийных заявок в работе нет.<br>Закрытые гарантийные — в разделе «Закрытые».' : f === 'all' ? 'Заявок пока нет.<br>Нажмите «+», чтобы добавить.' : 'Пока пусто'}</div>`;
+  const now = new Date();
+  const today = toDateInput(now);
+  el.dataset.day = today;
+  const groupClosed = f === 'all' || f === 'closed';
+  if (!list.length && (q || !groupClosed)) {
+    el.innerHTML = `<div class="empty">${q ? 'Ничего не найдено' : f === 'open' ? 'Заявок в работе нет.<br>Нажмите «+», чтобы добавить.' : f === 'sd' ? 'Сейчас на СД ничего нет' : 'Гарантийных заявок в работе нет.<br>Закрытые гарантийные — в разделе «Закрытые».'}</div>`;
     return;
   }
-  el.innerHTML = list.map((o) => {
-    let when;
-    if (o.status === 'open') when = visitDate(o) ? '🕑 ' + visitLabel(o) : 'создана ' + fmtDate(o.createdAt);
-    else if (o.status === 'sd') when = '🔧 ' + sdLine(o) + (sdLate(o) ? ' · ⚠ ждёт ' + sdDays(o) + ' ' + daysWord(sdDays(o)) : '');
-    else when = STATUS[o.status].toLowerCase() + ' ' + fmtDate(o.closedAt || o.updatedAt, false) + (o.diagOnly ? ' · диагностика' : '');
-    const sum = o.status === 'closed' ? `<span class="${orderNet(o) >= 0 ? 'pos' : 'neg'}">${orderNet(o) >= 0 ? '+' : ''}${money(orderNet(o))}</span>` : '';
-    return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
-      <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${kindTag(o)}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
-      <div class="row small"><span class="grow">${esc([o.name, shortAddress(o)].filter(Boolean).join(' · ') || o.phone || o.notes || '—')}</span></div>
-      <div class="row small muted"><span class="grow">${esc(when)}</span>${sum}</div>
-    </a>`;
-  }).join('');
+  if (!groupClosed) {
+    el.innerHTML = list.map(orderListItem).join('');
+    return;
+  }
+
+  const previousDay = new Date(now);
+  previousDay.setDate(previousDay.getDate() - 1);
+  const yesterday = toDateInput(previousDay);
+  const active = [], closedToday = [], closedYesterday = [], otherClosed = [];
+  for (const o of list) {
+    if (isActive(o.status)) { active.push(o); continue; }
+    const day = o.closedAt ? toDateInput(o.closedAt) : '';
+    if (day === today) closedToday.push(o);
+    else if (day === yesterday) closedYesterday.push(o);
+    else otherClosed.push(o);
+  }
+  const section = (id, title, date, orders) => {
+    if (q && !orders.length) return '';
+    const day = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
+    const count = orders.length;
+    const net = orders.reduce((total, o) => total + (o.status === 'closed' ? orderNet(o) : 0), 0);
+    return `<section class="closed-day" id="${id}" aria-labelledby="${id}-title">
+      <header class="closed-day-head">
+        <div><h2 id="${id}-title">${title}</h2>
+          <div class="muted">${day} · ${count} ${plural(count, 'заявка', 'заявки', 'заявок')}</div></div>
+        <div class="closed-day-sum"><div class="muted">${q ? 'Чистыми по поиску' : 'Чистыми'}</div>
+          <b class="${net < 0 ? 'neg' : net > 0 ? 'pos' : ''}">${money(net)}</b></div>
+      </header>
+      ${count ? `<div class="list">${orders.map(orderListItem).join('')}</div>` : ''}
+    </section>`;
+  };
+  el.innerHTML = active.map(orderListItem).join('') +
+    section('closed-today', 'Закрыто сегодня', now, closedToday) +
+    section('closed-yesterday', 'Закрыто вчера', previousDay, closedYesterday) +
+    (otherClosed.length ? `<h2 class="sec-h">Остальные закрытые</h2>${otherClosed.map(orderListItem).join('')}` : '');
+}
+
+function orderListItem(o) {
+  let when;
+  if (o.status === 'open') when = visitDate(o) ? '🕑 ' + visitLabel(o) : 'создана ' + fmtDate(o.createdAt);
+  else if (o.status === 'sd') when = '🔧 ' + sdLine(o) + (sdLate(o) ? ' · ⚠ ждёт ' + sdDays(o) + ' ' + daysWord(sdDays(o)) : '');
+  else when = STATUS[o.status].toLowerCase() + (o.closedAt ? ' ' + fmtDate(o.closedAt, false) : ' · дата не указана') +
+    (o.diagOnly ? ' · диагностика' : '');
+  const net = o.status === 'closed' ? orderNet(o) : null;
+  const sum = net === null ? '' : `<span class="${net >= 0 ? 'pos' : 'neg'}">${net >= 0 ? '+' : ''}${money(net)}</span>`;
+  return `<a class="item${sdLate(o) ? ' late' : ''}" href="#/order/${o.id}">
+    <div class="row"><b>№${o.num}</b><span class="grow">${esc([o.device, o.model].filter(Boolean).join(' '))}${kindTag(o)}${o.problemClient ? ' <span class="tag-bad">⚠</span>' : ''}</span><span class="badge ${o.status}">${STATUS[o.status]}</span></div>
+    <div class="row small"><span class="grow">${esc([o.name, shortAddress(o)].filter(Boolean).join(' · ') || o.phone || o.notes || '—')}</span></div>
+    <div class="row small muted"><span class="grow">${esc(when)}</span>${sum}</div>
+  </a>`;
 }
 
 // ================= АКТУАЛЬНЫЕ ЗАЯВКИ =================
@@ -2439,8 +2484,9 @@ function tickClock() {
   // дата и время на всех экранах — двумя строчками, чтобы заголовок не обрезался
   $('#clock').innerHTML = '<span class="c-d">' + d.toLocaleDateString('ru-RU', { weekday: 'short' }) + ' ' +
     String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '</span><span class="c-t">' + hhmm(d) + '</span>';
-  const td = $('#todayDate');
-  if (td && td.dataset.day !== toDateInput(d) && (location.hash || '#/today').split('/')[1] === 'today') route();
+  const tab = (location.hash || '#/today').split('/')[1];
+  const datedList = tab === 'today' ? $('#todayDate') : tab === 'orders' ? $('#list[data-day]') : null;
+  if (datedList && datedList.dataset.day !== toDateInput(d)) route();
 }
 
 // Номера в старых заявках (и после восстановления копии) — к виду +7 (965) 932-45-76

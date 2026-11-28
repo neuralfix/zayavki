@@ -2,7 +2,7 @@
 // и отправляет данные на Диск, когда появляется интернет (даже если приложение закрыто).
 'use strict';
 // При выпуске новой версии меняется номер здесь, в version.json и APP_VERSION в assets/js/app.js.
-const CACHE = 'zayavki-v49';
+const CACHE = 'zayavki-v50';
 const OCR_CACHE = 'zayavki-ocr-v1'; // распознавание шильдика: большие файлы, не перекачиваются при обновлении
 const SHARED_SCRIPTS = ['assets/js/db.js', 'assets/js/crypto.js', 'assets/js/sync.js'];
 importScripts(...SHARED_SCRIPTS);
