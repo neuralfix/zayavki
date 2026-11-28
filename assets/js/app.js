@@ -53,10 +53,9 @@ async function copyText(t) {
 const DEVICES = ['Холодильник', 'Стиральная машина', 'Телевизор', 'Другое'];
 const EXP_CATS = ['Реклама', 'Колибри', 'Прочее'];
 const EXP_MONTHLY = ['Реклама', 'Колибри']; // платятся раз в месяц — выбирается месяц, а не дата
-const COST_CHIPS = ['Компрессор', 'Фреон', 'Шредер', 'Фильтр', 'Реле', 'Датчик', 'Термостат', 'Испаритель', 'ТЭН', 'Насос', 'Подшипники', 'Плата', 'Подсветка'];
 const STATUS = { open: 'В работе', sd: 'На СД', closed: 'Закрыта', refused: 'Отказ', cancelled: 'Отмена' };
 const SD_WHAT = ['Плата', 'Модуль', 'Блок питания', 'Техника целиком'];
-const APP_VERSION = '1.47'; // вместе с version.json и CACHE в sw.js
+const APP_VERSION = '1.48'; // вместе с version.json и CACHE в sw.js
 
 const state = { filter: 'all', search: '', month: monthKey(Date.now()) };
 let photoUrls = [];
@@ -1445,12 +1444,28 @@ function plateDialog(r, cur, curDevice, onOpen) {
 }
 
 // ---------- Закрытие заявки ----------
+function pastCostNames(orders, exceptId) {
+  const closed = orders.filter((o) => o.status === 'closed' && o.id !== exceptId)
+    .sort((a, b) => (b.closedAt || b.updatedAt || 0) - (a.closedAt || a.updatedAt || 0));
+  const names = new Set();
+  for (const order of closed) {
+    if (!Array.isArray(order.costs)) continue;
+    for (const cost of order.costs) {
+      if (typeof cost?.name === 'string' && cost.name.trim()) names.add(cost.name);
+    }
+  }
+  return [...names];
+}
+
 async function renderClose(id) {
-  const o = await dbGet('orders', id);
+  const hash = location.hash;
+  const [o, orders] = await Promise.all([dbGet('orders', id), dbAll('orders')]);
+  if (location.hash !== hash) return;
   if (!o) return go('#/orders', true);
   const wasClosed = o.status === 'closed';
   setTitle('Отчёт · №' + o.num, true);
   const costs = (o.costs && o.costs.length) ? o.costs : [{ name: '', amount: '' }];
+  const history = pastCostNames(orders, id);
   // Гарантия: число + дней/месяцев; по умолчанию 12 дней, у уже закрытой — как было
   let warN = o.warrantyMonths || o.warrantyDays || (wasClosed ? '' : 12);
   let warU = o.warrantyMonths ? 'm' : 'd';
@@ -1464,7 +1479,8 @@ async function renderClose(id) {
         <span class="label">Расходы — что купили по заявке</span>
         <div id="costs"></div>
         <button type="button" class="link" id="addCost">+ Добавить расход</button>
-        <div class="chips" style="margin-top:6px">${COST_CHIPS.map((c) => `<button type="button" class="chip" data-c="${c}">${c}</button>`).join('')}</div>
+        <div class="chips cost-history" id="costHistory" role="group" aria-label="Прошлые расходы" ${history.length ? '' : 'hidden'}></div>
+        <button type="button" class="link small" id="moreCostHistory" hidden>Ещё расходы</button>
         <div class="total" id="total"></div>
       </div>
       <div class="card">
@@ -1483,12 +1499,13 @@ async function renderClose(id) {
   const addRow = (c = { name: '', amount: '' }, focus) => {
     const row = document.createElement('div');
     row.className = 'cost-row';
-    row.innerHTML = `<input class="input" placeholder="Что купил" value="${esc(c.name)}">
-      <input class="input" inputmode="decimal" placeholder="₽" value="${c.amount !== '' && c.amount != null ? esc(c.amount) : ''}">
+    row.innerHTML = `<input class="input" placeholder="Что купил" aria-label="Что купил" value="${esc(c.name)}">
+      <input class="input" inputmode="decimal" placeholder="₽" aria-label="Сумма расхода, ₽" value="${c.amount !== '' && c.amount != null ? esc(c.amount) : ''}">
       <button type="button" class="x" aria-label="Убрать">×</button>`;
     $('.x', row).onclick = () => { row.remove(); if (!box.children.length) addRow(); recalc(); };
     box.appendChild(row);
-    if (focus) $$('input', row)[c.name ? 1 : 0].focus();
+    if (focus) $('input', row).focus();
+    return row;
   };
   const readCosts = () => $$('.cost-row', box).map((r) => {
     const [n, a] = $$('input', r);
@@ -1507,10 +1524,27 @@ async function renderClose(id) {
   };
   costs.forEach((c) => addRow(c));
   $('#addCost').onclick = () => addRow({ name: '', amount: '' }, true);
-  $$('[data-c]').forEach((ch) => ch.onclick = () => {
-    const empty = $$('.cost-row', box).find((r) => !$$('input', r)[0].value && !$$('input', r)[1].value);
-    if (empty) { $$('input', empty)[0].value = ch.dataset.c; $$('input', empty)[1].focus(); } else addRow({ name: ch.dataset.c, amount: '' }, true);
-  });
+  const historyBox = $('#costHistory');
+  const historyMore = $('#moreCostHistory');
+  const appendCostHistory = () => {
+    const first = historyBox.childElementCount;
+    for (const name of history.slice(first, first + 8)) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'chip';
+      button.textContent = name;
+      button.onclick = () => {
+        const row = $$('.cost-row', box).find((r) => $$('input', r).every((input) => !input.value.trim())) || addRow();
+        const [nameInput, amount] = $$('input', row);
+        nameInput.value = name;
+        amount.focus();
+      };
+      historyBox.appendChild(button);
+    }
+    historyMore.hidden = historyBox.childElementCount >= history.length;
+  };
+  historyMore.onclick = appendCostHistory;
+  appendCostHistory();
   $$('#warU button').forEach((b) => b.onclick = () => { warU = b.dataset.u; $$('#warU button').forEach((x) => x.classList.toggle('on', x === b)); });
   $('#warNone').onclick = () => { $('#warN').value = ''; };
   $('#warN').oninput = () => { $('#warN').value = $('#warN').value.replace(/\D/g, '').slice(0, 3); };
